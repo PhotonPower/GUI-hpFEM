@@ -1,0 +1,6 @@
+[server]
+headless = false
+maxUploadSize = 200
+
+[browser]
+gatherUsageStats = false
