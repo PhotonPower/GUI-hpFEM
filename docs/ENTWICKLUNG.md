@@ -27,4 +27,4 @@ Neue Tabelle als CSV `wellenlänge[µm], n, k` in hp-FEM unter `python/hpfem/dat
 
 ## Continuous Integration
 
-`docs/ci-workflow.yml` ist der GitHub-Actions-Workflow (ruff und pytest unter Python 3.10 und 3.12). Er liegt hier, weil der zum Einrichten benutzte Token keinen `workflow`-Scope hatte. Zum Aktivieren die Datei nach `.github/workflows/ci.yml` verschieben (Weboberfläche oder Token mit `workflow`-Scope).
+`.github/workflows/ci.yml` führt `ruff check .` und `pytest` unter Python 3.10 und 3.12 bei jedem Push und Pull Request aus.
