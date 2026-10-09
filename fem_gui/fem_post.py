@@ -46,7 +46,12 @@ def results_dataframe(res, mode):
             for name, v in ab["by_material"].items():
                 row[f"A[{name}]"] = v
             row["A exakt (Summe)"] = ab["total"]
+        fb = p.get("flux_balance")
+        if fb:
+            row["Flussbilanz-Rest"] = fb.get("relative_residual")
         row["Freiheitsgrade"], row["Zeit (s)"] = p["dofs"], p["time_s"]
+        if p.get("scalar"):
+            row["E_z-Pfad"] = "ja"
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -120,8 +125,10 @@ def fig_pscan(ps):
         return fig
     dofs = np.array([p["dofs"] for p in ok], float)
     order = [p["order"] for p in ok]
-    for key, lab in (("R", "R"), ("T", "T"), ("A", "A")):
+    for key, lab in (("R", "R"), ("T", "T"), ("A", "A"), ("sigma_sca", "σ_sca"), ("sigma_ext", "σ_ext")):
         v = np.array([np.nan if p.get(key) is None else p[key] for p in ok], float)
+        if key.startswith("sigma") and np.isfinite(v).all():
+            v = v / np.abs(v).max()                                     # widths relative to the largest (the deviation plot is relative)
         if np.isfinite(v).all():
             axs[0].plot(order, v, "o-", label=lab)
             d = np.abs(v - v[-1])[:-1]
@@ -166,8 +173,20 @@ def derived(mp, model, A_energy=None):
             regions[n] = float(integral / (float(mp["S_inc"]) * P_m))
     A_map = float(sum(regions.values())) if regions else 0.0
     norm = {n: v * A_energy / A_map for n, v in regions.items()} if (A_energy is not None and A_map > 0) else None
-    return dict(x=x, y=y, X=X, Y=Y, E=E, Eabs=np.sqrt(E2), E2=E2, Q=Q, idx=idx, regions=regions, A_map=A_map, regions_norm=norm,
-                map_quality=(A_map / A_energy if (A_energy and A_energy > 1e-9) else None))
+    out = dict(x=x, y=y, X=X, Y=Y, E=E, Eabs=np.sqrt(E2), E2=E2, Q=Q, idx=idx, regions=regions, A_map=A_map, regions_norm=norm,
+               map_quality=(A_map / A_energy if (A_energy and A_energy > 1e-9) else None))
+    _add_hs(out, mp.get("H"), mp.get("S"))
+    return out
+
+
+def _add_hs(d, H, S):
+    """H [A/m] and the time-averaged Poynting vector S [W/m²] (hpfem M15 F12) where the worker stored them."""
+    if H is not None:
+        d["H"] = np.asarray(H, dtype=complex)
+        d["Habs"] = np.sqrt((np.abs(d["H"]) ** 2).sum(axis=-1))
+    if S is not None:
+        d["S"] = np.asarray(S, dtype=complex).real
+        d["Sabs"] = np.sqrt((d["S"] ** 2).sum(axis=-1))
 
 
 QUANTITIES = {
@@ -177,16 +196,44 @@ QUANTITIES = {
     "Re E_x": ("r0", "Re E_x"), "Re E_y": ("r1", "Re E_y"), "Re E_z": ("r2", "Re E_z"),
     "Im E_x": ("i0", "Im E_x"), "Im E_y": ("i1", "Im E_y"), "Im E_z": ("i2", "Im E_z"),
     "Absorbierte Leistungsdichte Q": ("Q", "Q (W/m³) für |E₀| = 1 V/m"),
+    "|H| (Magnetfeld)": ("Habs", "|H| (A/m) für |E₀| = 1 V/m"),
+    "|H_x|": ("h0", "|H_x| (A/m)"), "|H_y|": ("h1", "|H_y| (A/m)"), "|H_z|": ("h2", "|H_z| (A/m)"),
+    "Poynting S_x (Fluss entlang der Periode)": ("s0", "S_x (W/m²)"), "Poynting S_y (Fluss vertikal)": ("s1", "S_y (W/m²)"),
+    "Poynting S_z (Fluss entlang der Linien)": ("s2", "S_z (W/m²)"), "|S| (Betrag des Energieflusses)": ("Sabs", "|S| (W/m²)"),
 }
+SIGNED = ("r", "i", "s")                                     # codes with a signed (diverging) colour scale
+
+
+def available_quantities(d):
+    """The keys of QUANTITIES whose data the map has (H and S only from hpfem >= 0.4)."""
+    out = []
+    for k, (code, _) in QUANTITIES.items():
+        if code in ("Habs",) or code[0] == "h":
+            if "H" not in d:
+                continue
+        if code in ("Sabs",) or code[0] == "s":
+            if "S" not in d:
+                continue
+        out.append(k)
+    return out
+
+
+def _component(d, code, axis_last):
+    """Value of a component code ('c0', 'r1', 'h2', 's0', ...) on the map (arrays (..., 3))."""
+    kind, comp = code[0], int(code[1])
+    if kind == "h":
+        return np.abs(d["H"][..., comp])
+    if kind == "s":
+        return d["S"][..., comp]
+    c = d["E"][..., comp]
+    return {"c": np.abs(c), "r": c.real, "i": c.imag}[kind]
 
 
 def quantity(d, key):
     code = QUANTITIES[key][0]
-    if code in ("Eabs", "E2", "Q"):
+    if code in ("Eabs", "E2", "Q", "Habs", "Sabs"):
         return d[code]
-    kind, comp = code[0], int(code[1])
-    c = d["E"][:, :, comp]
-    return {"c": np.abs(c), "r": c.real, "i": c.imag}[kind]
+    return _component(d, code, True)
 
 
 def fig_map(mp, d, model, key, periods=1, cmap=None, vmax=None, log=False, mesh_npz=None, show_geometry=True, figsize=(7.4, 6.2)):
@@ -200,7 +247,7 @@ def fig_map(mp, d, model, key, periods=1, cmap=None, vmax=None, log=False, mesh_
         kx = float(mp["kx"]) if "kx" in mp else 0.0
         phase = np.exp(1j * kx * P * 1e-9)
         parts, xs = [f], [x]
-        sym = key.startswith("Re") or key.startswith("Im")
+        sym = QUANTITIES[key][0][0] in ("r", "i")
         for k in range(1, periods):
             if sym:                                                         # Bloch phase for the real / imaginary part
                 c = d["E"][:, :, int(QUANTITIES[key][0][1])] * phase ** k
@@ -210,7 +257,7 @@ def fig_map(mp, d, model, key, periods=1, cmap=None, vmax=None, log=False, mesh_
             xs.append(x + k * P)
         f = np.concatenate([parts[0]] + [p[1:] for p in parts[1:]], axis=0)
         x = np.concatenate([xs[0]] + [xx[1:] for xx in xs[1:]])
-    signed = key.startswith("Re") or key.startswith("Im")
+    signed = QUANTITIES[key][0][0] in SIGNED and QUANTITIES[key][0] not in ("Sabs",)
     top = vmax if vmax else float(np.nanmax(np.abs(f))) or 1.0
     if signed:
         norm, cm = Normalize(-top, top), cmap or "RdBu_r"
@@ -350,6 +397,9 @@ def fig_adaptive_steps(steps):
         if np.isfinite(T).all():
             axs[1].loglog(dofs[:-1], np.maximum(np.abs(T - T[-1])[:-1], 1e-12), "s-", label="|T − T(letzter Schritt)|")
     axs[1].loglog(dofs, [max(s["eta"], 1e-12) for s in steps], "^--", color="0.4", label="Fehlerschätzer η")
+    if any(s.get("goal_error") is not None for s in steps):
+        g = np.array([np.nan if s.get("goal_error") is None else max(s["goal_error"], 1e-14) for s in steps], float)
+        axs[1].loglog(dofs, g, "v-", color="C3", label="geschätzter Fehler von R₀ (DWR)")
     axs[1].set_xlabel("Freiheitsgrade")
     axs[1].legend(fontsize=7)
     axs[2].plot([s["step"] for s in steps], [s["max_p"] for s in steps], "o-", label="größtes p")
@@ -437,7 +487,9 @@ def derived_tri(tri, model):
     eps_v = eps[np.clip(vtag - 1, 0, len(eps) - 1)]
     E2 = (np.abs(E) ** 2).sum(axis=1)
     Q = 0.5 * float(tri["omega"]) * EPS0 * eps_v.imag * E2
-    return dict(points=pts, simplices=simp, E=E, Eabs=np.sqrt(E2), E2=E2, Q=Q, vtag=vtag)
+    out = dict(points=pts, simplices=simp, E=E, Eabs=np.sqrt(E2), E2=E2, Q=Q, vtag=vtag)
+    _add_hs(out, tri.get("values_H"), tri.get("values_S"))
+    return out
 
 
 def fig_map_tri(tri, d, model, key, periods=1, cmap=None, vmax=None, log=False, show_geometry=True, figsize=(7.4, 6.2)):
@@ -449,13 +501,13 @@ def fig_map_tri(tri, d, model, key, periods=1, cmap=None, vmax=None, log=False, 
     P = float(tri["period_nm"])
     pts, simp, E = d["points"], d["simplices"], d["E"]
     code = QUANTITIES[key][0]
-    if code in ("Eabs", "E2", "Q"):
+    if code in ("Eabs", "E2", "Q", "Habs", "Sabs"):
         f = d[code]
         sym = False
     else:
-        kind, comp = code[0], int(code[1])
-        f = {"c": np.abs(E[:, comp]), "r": E[:, comp].real, "i": E[:, comp].imag}[kind]
-        sym = kind in ("r", "i")
+        f = _component(d, code, True)
+        sym = code[0] in ("r", "i")
+    signed = code[0] in SIGNED and code != "Sabs"
     X, S_, F = [pts[:, 0]], [simp], [f]
     if periods > 1:
         phase = np.exp(1j * float(tri["kx"]) * P * 1e-9)
@@ -473,7 +525,7 @@ def fig_map_tri(tri, d, model, key, periods=1, cmap=None, vmax=None, log=False, 
     simplices = np.concatenate(S_)
     values = np.concatenate(F)
     top = vmax if vmax else float(np.nanmax(np.abs(values))) or 1.0
-    if sym:
+    if signed:
         norm, cm = Normalize(-top, top), cmap or "RdBu_r"
     elif log and values.min() >= 0:
         lo = max(top * 1e-4, float(values[values > 0].min()) if (values > 0).any() else 1e-12)
@@ -501,5 +553,277 @@ def fig_map_tri(tri, d, model, key, periods=1, cmap=None, vmax=None, log=False, 
     ax.set_xlabel("x (nm)")
     ax.set_ylabel("y (nm)")
     ax.set_title(f"{key}   λ = {float(tri['lam_nm']):.1f} nm, θ = {float(tri['theta']):.1f}°, φ = {float(tri['phi']):.1f}°, {str(tri['pol'])}  (Elementdarstellung)", fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+# ------------------------------------------------------------------------------------------------------- derivatives (Jacobian)
+def jacobian_dataframe(pt):
+    """The Jacobian of one point (hpfem.grating.jacobian) as a table: one row per order, one column per parameter, plus the totals R and T."""
+    jac = pt.get("jacobian")
+    if not jac:
+        return pd.DataFrame()
+    J = np.asarray(jac["J"], dtype=float)
+    cols = [f"d/d {c}" + (f" ({u})" if u else "") for c, u in zip(jac["cols"], jac["units"])]
+    df = pd.DataFrame(J, columns=cols)
+    df.insert(0, "Ordnung", jac["rows"])
+    for side in ("R", "T"):
+        mask = [r.startswith(side) for r in jac["rows"]]
+        if any(mask):
+            total = J[np.array(mask)].sum(axis=0)
+            df.loc[len(df)] = [f"{side} gesamt"] + list(total)
+    return df
+
+
+def jacobian_sweep(points, mode):
+    """{column label: (x values, dR/dp, dT/dp or None)} of the total R and T along the sweep."""
+    out = {}
+    for p in points:
+        jac = p.get("jacobian")
+        if not jac or "error" in p:
+            continue
+        J = np.asarray(jac["J"], dtype=float)
+        rows = jac["rows"]
+        r_mask = np.array([r.startswith("R") for r in rows])
+        t_mask = np.array([r.startswith("T") for r in rows])
+        x = p.get("value") if mode != "none" else p.get("index", 0)
+        for j, (c, u) in enumerate(zip(jac["cols"], jac["units"])):
+            key = f"{c}" + (f" ({u})" if u else "")
+            xs, rs, ts = out.setdefault(key, ([], [], []))
+            xs.append(x)
+            rs.append(float(J[r_mask, j].sum()) if r_mask.any() else np.nan)
+            ts.append(float(J[t_mask, j].sum()) if t_mask.any() else np.nan)
+    return out
+
+
+def fig_jacobian(points, mode):
+    """Derivatives of the total R (and T) with respect to every parameter: bars for a single point, curves along a sweep."""
+    import matplotlib.pyplot as plt
+
+    data = jacobian_sweep(points, mode)
+    if not data:
+        fig, ax = plt.subplots(figsize=(7, 2.5))
+        ax.text(0.5, 0.5, "keine Ableitungen", ha="center")
+        ax.axis("off")
+        return fig
+    n_x = len(next(iter(data.values()))[0])
+    if mode == "none" or n_x == 1:
+        labels = list(data)
+        r = [data[k][1][0] for k in labels]
+        t = [data[k][2][0] for k in labels]
+        fig, ax = plt.subplots(figsize=(max(6.5, 1.3 * len(labels)), 3.8))
+        xs = np.arange(len(labels))
+        ax.bar(xs - 0.2, r, 0.4, color="#1f77b4", label="dR/dp")
+        if np.isfinite(t).any():
+            ax.bar(xs + 0.2, t, 0.4, color="#2ca02c", label="dT/dp")
+        ax.set_xticks(xs, labels, rotation=20, ha="right", fontsize=8)
+        ax.axhline(0, color="0.3", lw=0.6)
+        ax.set_ylabel("Ableitung")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3, axis="y")
+        fig.tight_layout()
+        return fig
+    k = len(data)
+    ncol = 2 if k > 1 else 1
+    nrow = int(np.ceil(k / ncol))
+    fig, axs = plt.subplots(nrow, ncol, figsize=(6 * ncol, 2.8 * nrow), squeeze=False, sharex=True)
+    for a, (key, (xs, rs, ts)) in zip(axs.ravel(), data.items()):
+        a.plot(xs, rs, "o-", ms=3, color="#1f77b4", label="dR/dp")
+        if np.isfinite(ts).any():
+            a.plot(xs, ts, "s--", ms=3, color="#2ca02c", label="dT/dp")
+        a.axhline(0, color="0.3", lw=0.6)
+        a.set_title(f"nach {key}", fontsize=9)
+        a.grid(alpha=0.3)
+        a.legend(fontsize=7)
+    for a in axs.ravel()[k:]:
+        a.axis("off")
+    for a in axs[-1]:
+        a.set_xlabel(SWEEP_LABEL.get(mode, ""))
+    fig.tight_layout()
+    return fig
+
+
+# ------------------------------------------------------------------------------------------------------------- resonances
+def resonances_dataframe(points):
+    rows = []
+    for p in points:
+        if "error" in p:
+            rows.append({"Nr": p.get("index"), "Fehler": p["error"]})
+            continue
+        for m in p.get("modes", []):
+            rows.append({"Nr": p["index"], "θ (°)": p["theta"], "φ (°)": p["phi"], "kx·P/2π": p["kx_over_G"], "Mode": m["m"], "λ_res (nm)": m["lam_nm"],
+                         "Q": m["Q"], "Re ω (1/s)": m["omega"][0], "Im ω (1/s)": m["omega"][1], "Residuum": m["residual"],
+                         "Freiheitsgrade": p["dofs"], "Zeit (s)": p["time_s"]})
+    return pd.DataFrame(rows)
+
+
+def fig_resonances(points, mode, q_max=None):
+    """Resonances: λ_res and Q of the modes of a single point, or the band structure λ_res over the sweep (colour: log10 Q)."""
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
+
+    ok = [p for p in points if "error" not in p and p.get("modes")]
+    fig, ax = plt.subplots(figsize=(8, 4.2))
+    if not ok:
+        ax.text(0.5, 0.5, "keine Moden", ha="center")
+        ax.axis("off")
+        return fig
+    lam = np.array([m["lam_nm"] for p in ok for m in p["modes"]])
+    Q = np.array([max(m["Q"], 1e-3) for p in ok for m in p["modes"]])
+    if q_max:
+        Q = np.minimum(Q, q_max)
+    if mode == "none" or len(ok) == 1:
+        ax.semilogy(lam, Q, "o", ms=7)
+        for p in ok:
+            for m in p["modes"]:
+                ax.annotate(str(m["m"]), (m["lam_nm"], max(m["Q"], 1e-3)), textcoords="offset points", xytext=(4, 4), fontsize=8)
+        ax.axvline(ok[0]["lam_target_nm"], color="0.5", ls="--", lw=0.8, label="Zielwellenlänge")
+        ax.set_xlabel("Resonanzwellenlänge λ_res (nm)")
+        ax.set_ylabel("Güte Q")
+        ax.legend(fontsize=8)
+    else:
+        if mode in ("theta", "phi"):
+            x = np.array([p["kx_over_G"] for p in ok for _ in p["modes"]])
+            ax.set_xlabel("Bloch-Wellenzahl kx·P/2π")
+        else:
+            x = np.array([p["value"] for p in ok for _ in p["modes"]])
+            ax.set_xlabel(SWEEP_LABEL.get(mode, ""))
+        sc = ax.scatter(x, lam, c=Q, cmap="viridis", norm=LogNorm(max(Q.min(), 1e-3), max(Q.max(), 1.0)), s=22)
+        fig.colorbar(sc, ax=ax, label="Güte Q")
+        ax.set_ylabel("Resonanzwellenlänge λ_res (nm)")
+        ax.set_title("Bandstruktur der offenen Zelle (Re ω, Farbe: Güte)", fontsize=9)
+    ax.grid(alpha=0.3, which="both")
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------------------------------------- timing, balance
+PHASES = {"solver.assembly": "Assemblierung", "solver.constraints": "Randbedingungen", "solver.factorisation": "Faktorisierung",
+          "solver.solve": "Lösen", "solver.post": "Nachbereitung (Löser)", "setup": "Aufbau", "postprocess": "Auswertung (Ordnungen, Absorption)"}
+
+
+def timing_dataframe(points):
+    rows = []
+    for p in points:
+        t = p.get("timing")
+        if not t or "error" in p:
+            continue
+        row = {"Nr": p.get("index")}
+        for k, lab in PHASES.items():
+            if k in t:
+                row[lab] = t[k]
+        if "eigensolve" in t:
+            row["Eigenwertlöser"] = t["eigensolve"]
+        row["gesamt"] = t.get("total")
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def balance_dataframe(points):
+    """Energy balance per point: orders (R, T), absorbed power in the physical region (exact), their sum, and the flux balance of the library
+    through the PML boundaries."""
+    rows = []
+    for p in points:
+        if "error" in p:
+            continue
+        ab = p.get("absorbed") or {}
+        A = ab.get("total")
+        row = {"Nr": p["index"], "R": p["R"], "T": p["T"], "A exakt (physikalisches Gebiet)": A}
+        if A is not None:
+            row["R + T + A"] = p["R"] + (p["T"] or 0.0) + A
+        if p.get("A_exact") is not None:
+            row["A Bibliothek (alle Zellen inkl. PML)"] = p["A_exact"]
+        fb = p.get("flux_balance")
+        if fb:
+            row["Flussbilanz: relativer Rest"] = fb.get("relative_residual")
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# ------------------------------------------------------------------------------------------------------- isolated structures
+def iso_dataframe(points, mode):
+    """Table of an isolated structure: widths (scattering, absorption, extinction; Mie where given) and detector fluxes."""
+    rows = []
+    for p in points:
+        if "error" in p:
+            rows.append({"Nr": p.get("index"), SWEEP_LABEL.get(mode, "Wert"): p.get("value"), "Fehler": p["error"]})
+            continue
+        row = {"Nr": p["index"], "λ (nm)": p["lam_nm"], "θ (°)": p["theta"], "φ (°)": p["phi"]}
+        for key, lab in (("sigma_sca", "σ_sca (nm)"), ("sigma_sca_up", "σ_sca nach oben (nm)"), ("sigma_abs", "σ_abs (nm)"), ("sigma_ext", "σ_ext (nm)")):
+            if p.get(key) is not None:
+                row[lab] = p[key] * 1e9
+        if p.get("mie"):
+            for key, lab in (("sigma_sca", "Mie σ_sca (nm)"), ("sigma_ext", "Mie σ_ext (nm)")):
+                row[lab] = p["mie"][key] * 1e9
+        for d in p.get("detectors", []):
+            if d.get("P_down") is not None:
+                row[f"{d['name']}: P nach unten (W/m)"] = d["P_down"]
+                row[f"{d['name']}: normiert"] = d["normalised"]
+        row["Freiheitsgrade"], row["Zeit (s)"] = p["dofs"], p["time_s"]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def fig_widths(points, mode, width_nm=None):
+    """Scattering, absorption and extinction widths per unit length over the sweep (or bars for a single point), with the Mie series."""
+    import matplotlib.pyplot as plt
+
+    ok = [p for p in points if "error" not in p and p.get("sigma_sca") is not None]
+    fig, ax = plt.subplots(figsize=(8, 4.4))
+    if not ok:
+        ax.text(0.5, 0.5, "keine Querschnitte (Messbox fehlt?)", ha="center")
+        ax.axis("off")
+        return fig
+    x = [p["value"] if mode != "none" else p["lam_nm"] for p in ok]
+    single = len(ok) == 1
+    for key, lab, col, mk in (("sigma_ext", "Extinktion", "C0", "o-"), ("sigma_sca", "Streuung", "C1", "s-"), ("sigma_abs", "Absorption", "C3", "^-"),
+                              ("sigma_sca_up", "Streuung in den oberen Halbraum (Messbox oben)", "C2", "v--")):
+        vals = [p.get(key) for p in ok]
+        if all(v is not None for v in vals):
+            ax.plot(x, [v * 1e9 for v in vals], mk if not single else "o", ms=5, color=col, label=lab)
+        if key in ("sigma_ext", "sigma_sca", "sigma_abs") and all(p.get("mie") for p in ok):
+            ax.plot(x, [p["mie"][key] * 1e9 for p in ok], "--" if not single else "x", color=col, lw=1.0, ms=9, alpha=0.8, label=f"{lab} (Mie)")
+    ax.set_xlabel(SWEEP_LABEL.get(mode, "Wellenlänge (nm)") if mode != "none" else "Wellenlänge (nm)")
+    ax.set_ylabel("Querschnitt je Länge (nm)")
+    if width_nm:
+        sec = ax.secondary_yaxis("right", functions=(lambda v: v / width_nm, lambda q: q * width_nm))
+        sec.set_ylabel("Effizienz σ / Breite der Struktur")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def fig_detectors(points, mode):
+    """Energy flow of the total field through the detectors (normalised to the incident flow through the same width)."""
+    import matplotlib.pyplot as plt
+
+    ok = [p for p in points if "error" not in p and p.get("detectors")]
+    fig, ax = plt.subplots(figsize=(8, 3.8))
+    if not ok:
+        ax.text(0.5, 0.5, "keine Detektoren", ha="center")
+        ax.axis("off")
+        return fig
+    names = [d["name"] for d in ok[0]["detectors"]]
+    x = [p["value"] if mode != "none" else p["lam_nm"] for p in ok]
+    for k, n in enumerate(names):
+        vals = [p["detectors"][k]["normalised"] for p in ok]
+        ax.plot(x, vals, "o-" if len(ok) > 1 else "o", label=n)
+    ax.set_xlabel(SWEEP_LABEL.get(mode, "Wellenlänge (nm)") if mode != "none" else "Wellenlänge (nm)")
+    ax.set_ylabel("P nach unten / einfallend durch dieselbe Breite")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def fig_farfield_iso(pt):
+    """d sigma / d phi (nm per rad) of an isolated structure in a homogeneous background, polar (phi from +x, counter-clockwise; light from +y)."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw={"projection": "polar"})
+    phi = np.asarray(pt["farfield_phi"])
+    ax.plot(phi, np.asarray(pt["farfield_dsigma"]) * 1e9, color="C0")
+    ax.set_title(f"dσ/dφ (nm/rad) bei λ = {pt['lam_nm']:.1f} nm; 90° = +y (Einfallsseite)", fontsize=9)
     fig.tight_layout()
     return fig
