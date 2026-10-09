@@ -18,6 +18,11 @@ Engines (job["solver"]["engine"]):
               specular order, hpfem >= 0.4 M15 F1/F16): TE, TM and conical incidence.
   conical     hpfem.ConicalScattering set up by this worker (older hpfem): TE, TM, any azimuth; uniform mesh, polynomial order p.
   inplane     hpfem.Scattering2D (in-plane TM only): uniform mesh, order p.
+  isolated    an isolated (non-periodic) structure (model domain lateral = "pml"): hpfem.ConicalScattering with PML on all four sides and
+              the layered background, no Bloch pairs (TE, TM, conical). Results: the scattered power through the closed measurement box
+              (scattering width), in a homogeneous background also the absorption and extinction widths (conical_cross_sections) and the
+              far-field pattern (ConicalFarField), the Mie series of a single circular cylinder as reference, and the energy flow of the
+              total field through the detector segments of the model.
   inplane_hp  as inplane with hp-adaptive refinement per sweep value (estimate, Doerfler marking, hp decision by prediction, hp_refine),
               as in the notebook 02_hp_adaptivity_lshape and run_R3_adaptive.py; cells at the periodic faces and in the PML are never marked.
 
@@ -124,12 +129,15 @@ class Case:
         self.y_line = (lay["y_struct_top"] + 0.5 * (lay["y_cover_top"] - lay["y_struct_top"])) * 1e-9
         self.y_trans = (lay["interfaces"][-1] - 0.5 * (lay["interfaces"][-1] - lay["y_sub_bottom"])) * 1e-9
         say(f"mesh read in {time.time() - t0:.1f} s: {self.mesh.num_cells} cells")
-        try:
-            bad, nl, nr = periodic_defects(self.mesh, self.P)
-            if bad:
-                say(f"WARN the periodic sides of the mesh differ ({nl} / {nr} facets): Bloch constraints will fail")
-        except Exception:
-            pass
+        self.isolated = bool(lay.get("isolated"))
+        self.pml_side = float(lay.get("pml_side", 0.0)) * 1e-9
+        if not self.isolated:
+            try:
+                bad, nl, nr = periodic_defects(self.mesh, self.P)
+                if bad:
+                    say(f"WARN the periodic sides of the mesh differ ({nl} / {nr} facets): Bloch constraints will fail")
+            except Exception:
+                pass
         self.spaces = {}
         self.reuse = None                                          # (mesh, orders) of an adaptive run, reused along a sweep
 
@@ -317,6 +325,198 @@ class InplaneRun(Run):
         if ctx.lossless_sub:
             T = fourier_orders(self.total, case.y_trans, float(ctx.n_sub.real), self.kx, ctx.k0, case.P, self.kz, pts, maxo)
         return R, T
+
+
+class IsolatedRun(Run):
+    """An isolated structure: hpfem.ConicalScattering with the layered background and PML on all four sides (no Bloch pairs); the walls behind
+    the PML are PEC."""
+
+    def __init__(self, case, ctx, theta, phi, pol, order, solver):
+        h = case.h
+        wave = h.layered_conical_wave(ctx.stack, ctx.k0, np.radians(theta), np.radians(phi), h.Polarisation.S if pol == "TE" else h.Polarisation.P)
+        psi = min(float(solver.get("pml_angle_cap_deg", 80.0)), 85.0)          # an isolated scatterer radiates in every direction
+        try:
+            profile = h.PmlProfile.for_angle(psi, solver["pml_target"], 1.0, 2)
+        except Exception:
+            profile = h.PmlProfile(2, solver.get("pml_reflection", 1e-12))
+        n_ref = min(ctx.n_cover, float(ctx.n_sub.real)) if case.pml_bottom > 0 and ctx.lossless_sub else ctx.n_cover
+        box = h.PmlBox2D([0.0, case.y_phys_bottom], [case.P, case.y_phys_top], [case.pml_side, case.pml_side, case.pml_bottom, case.pml_top],
+                         ctx.k0, n_ref, profile)
+        setup = h.ConicalScatteringSetup()
+        setup.omega, setup.beta = ctx.omega, wave.beta
+        for i, n in enumerate(case.names):
+            setup.materials.set(1 + i, ctx.mat[n])
+        setup.background, setup.incident, setup.pml = ctx.stack, wave.field, box
+        try:
+            setup.incident_curl = wave.field_curl
+        except Exception:
+            pass
+        setup.pec_tags = [TAG_LEFT, TAG_RIGHT, TAG_BOTTOM, TAG_TOP]
+        setup.periodic = []
+        set_backend(setup, solver)
+        try:
+            setup.progress = lambda ev: (Control.progress(ev), not Control.cancelled())[1]
+        except Exception:
+            pass
+        nd, h1 = case.dofmaps(order)
+        t0 = time.time()
+        Control.last_phase = None
+        self.problem = h.ConicalScattering(nd, h1, setup)
+        self.solution = self.problem.solve()
+        self.t_solve = time.time() - t0
+        try:
+            self.dofs = int(len(self.problem.free_dofs))
+        except Exception:
+            self.dofs = ndofs(nd) + ndofs(h1)
+        self.h, self.case, self.ctx, self.wave, self.locator, self.mesh = h, case, ctx, wave, case.locator, case.mesh
+        self.profile, self.psi, self.order, self.max_order = profile, psi, order, order
+        self.kx, self.beta = wave.kx, wave.beta
+        self.ref_R, self.ref_T = float(wave.reflectance), float(wave.transmittance)
+
+    def total(self, x):
+        return np.asarray(self.problem.total_field(self.solution, self.locator, x), dtype=complex)
+
+
+def _gauss_line(a, b, n):
+    """n-point composite Gauss-Legendre rule (4 points per panel) on [a, b]: nodes, weights."""
+    g, w = np.polynomial.legendre.leggauss(4)
+    panels = max(int(np.ceil(n / 4)), 1)
+    edges = np.linspace(a, b, panels + 1)
+    xs, ws = [], []
+    for e0, e1 in zip(edges[:-1], edges[1:]):
+        xs.append(0.5 * (e1 - e0) * g + 0.5 * (e0 + e1))
+        ws.append(0.5 * (e1 - e0) * w)
+    return np.concatenate(xs), np.concatenate(ws)
+
+
+def line_flux(run, p0, p1, normal, scattered=False, n=400):
+    """Energy flow (W per m along z) of the total (or scattered) field through the straight segment p0 -> p1 [m] along `normal` (time-averaged
+    Poynting vector sampled by hpfem, M15 F12, composite Gauss rule). None if this hpfem cannot sample S."""
+    p0, p1, normal = np.asarray(p0, float), np.asarray(p1, float), np.asarray(normal, float)
+    L = float(np.linalg.norm(p1 - p0))
+    t, w = _gauss_line(0.0, L, n)
+    pts = p0[None, :] + np.outer(t / L, p1 - p0)
+    pts = np.ascontiguousarray(pts)
+    try:
+        if scattered:                                                  # hpfem samples S of the total field only: S_sca from E_sca and H_sca
+            Es, _ = run.problem.sample(run.solution, run.locator, pts, scattered=True, quantity="E")
+            Ht, _ = run.problem.sample(run.solution, run.locator, pts, quantity="H")
+            Hi = np.array([np.asarray(run.problem.incident_h_field(x), dtype=complex) for x in pts])
+            Es, Hs = np.asarray(Es, dtype=complex), np.asarray(Ht, dtype=complex) - Hi
+            S = 0.5 * np.cross(Es, np.conj(Hs)).real[:, :2]
+        else:
+            vals, _ = run.problem.sample(run.solution, run.locator, pts, quantity="S")
+            S = np.asarray(vals, dtype=complex).real[:, :2]
+    except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+        say(f"WARN Fluss durch eine Linie nicht berechnet: {exc}")
+        return None
+    if np.isnan(S).any():
+        return None
+    return float(np.sum(w * (S @ normal)))
+
+
+def box_surface_2d(case, box_nm):
+    """The closed measurement box (mesh lines) as a Surface2D with outward normals (inner cells)."""
+    h, mesh = case.h, case.mesh
+    V = np.asarray(mesh.vertices)
+    x0, x1, y0, y1 = (box_nm[k] * 1e-9 for k in ("x0", "x1", "y0", "y1"))
+    tol = 1e-7 * max(abs(x1), abs(y0), abs(y1), 1e-9)
+    cells = np.asarray(mesh.cells)
+    centroid = V[cells][:, :, :2].mean(axis=1)
+    facets = []
+    for f in range(mesh.num_facets):
+        v = V[mesh.facet_vertices(f)][:, :2]
+        on = ((np.all(np.abs(v[:, 1] - y0) < tol) or np.all(np.abs(v[:, 1] - y1) < tol)) and np.all((v[:, 0] > x0 - tol) & (v[:, 0] < x1 + tol))) or \
+             ((np.all(np.abs(v[:, 0] - x0) < tol) or np.all(np.abs(v[:, 0] - x1) < tol)) and np.all((v[:, 1] > y0 - tol) & (v[:, 1] < y1 + tol)))
+        if not on:
+            continue
+        inside = [c for c in mesh.facet_cells(f) if c >= 0 and x0 < centroid[c][0] < x1 and y0 < centroid[c][1] < y1]
+        if inside:
+            facets.append(h.Surface2D.Facet(f, inside[0]))
+    s_ = h.Surface2D()
+    s_.facets = facets
+    return s_
+
+
+def homogeneous_background(case, ctx):
+    model = case.model
+    return not model["layers"] and abs(ctx.eps[model["cover"]] - ctx.eps[model["substrate"]]) < 1e-12 and case.pml_bottom > 0
+
+
+def mie_cylinder(lam_nm, radius_nm, n_cyl, n_bg, pol):
+    """Scattering, absorption and extinction widths [m] of a circular cylinder at normal incidence (Bohren & Huffman 8.4; e^{-i omega t},
+    Im n > 0 lossy): pol "TE" = E along the axis (B&H case I, b_n), "TM" = H along the axis (case II, a_n)."""
+    import scipy.special as sp
+
+    k = 2 * np.pi * n_bg / (lam_nm * 1e-9)
+    a = radius_nm * 1e-9
+    x, m = k * a, complex(n_cyl) / n_bg
+    nmax = int(x + 4 * x ** (1 / 3) + 10)
+    n = np.arange(0, nmax + 1)
+    J, dJ = sp.jv(n, x), sp.jvp(n, x)
+    Jm, dJm = sp.jv(n, m * x), sp.jvp(n, m * x)
+    H, dH = sp.hankel1(n, x), sp.h1vp(n, x)
+    if pol == "TE":
+        c = (Jm * dJ - m * dJm * J) / (Jm * dH - m * dJm * H)
+    else:
+        c = (m * dJ * Jm - J * dJm) / (m * Jm * dH - dJm * H)
+    wgt = np.where(n == 0, 1.0, 2.0)
+    q_sca = 2 / x * float(np.sum(wgt * np.abs(c) ** 2))
+    q_ext = 2 / x * float(np.sum(wgt * c.real))
+    return dict(sigma_sca=q_sca * 2 * a, sigma_ext=q_ext * 2 * a, sigma_abs=(q_ext - q_sca) * 2 * a)
+
+
+def iso_result(case, ctx, run, theta, phi, pol, order):
+    """Results of an isolated structure: scattering width (flux of the scattered field out of the measurement box), in a homogeneous background
+    absorption and extinction widths and the far field, the Mie cylinder as reference, detector fluxes of the total field."""
+    h, model, lay = case.h, case.model, case.lay
+    Z0 = h.constants.Z0
+    intensity = 0.5 * ctx.n_cover / Z0                                        # |E0| = 1 V/m in the cover
+    th = np.radians(theta)
+    res = dict(lam_nm=ctx.lam_nm, theta=theta, phi=phi, pol=pol, order=order, dofs=run.dofs, time_s=run.t_solve, isolated=True,
+               R=None, T=None, A=None, R_orders={}, T_orders={}, ref_R=run.ref_R, ref_T=run.ref_T, omega=ctx.omega, n_cover=ctx.n_cover,
+               eps={n: [float(e.real), float(e.imag)] for n, e in ctx.eps.items()}, S_inc=0.5 * ctx.n_cover * np.cos(th) / Z0,
+               intensity=intensity, pml_R0=_reflection(run.profile))
+    box = lay.get("box")
+    if box:
+        b = {k: v * 1e-9 for k, v in box.items()}
+        sides = dict(top=line_flux(run, (b["x0"], b["y1"]), (b["x1"], b["y1"]), (0, 1), True),
+                     bottom=line_flux(run, (b["x0"], b["y0"]), (b["x1"], b["y0"]), (0, -1), True),
+                     left=line_flux(run, (b["x0"], b["y0"]), (b["x0"], b["y1"]), (-1, 0), True),
+                     right=line_flux(run, (b["x1"], b["y0"]), (b["x1"], b["y1"]), (1, 0), True))
+        if all(v is not None for v in sides.values()):
+            res["P_sca_box"] = {k: float(v) for k, v in sides.items()}
+            res["sigma_sca"] = float(sum(sides.values()) / intensity)
+            res["sigma_sca_up"] = float(sides["top"] / intensity)
+        if homogeneous_background(case, ctx):
+            try:
+                surf = box_surface_2d(case, box)
+                cs = h.conical_cross_sections(run.problem, run.solution, surf)
+                res.update(sigma_sca_lib=float(cs.scattering), sigma_abs=float(cs.absorption), sigma_ext=float(cs.extinction))
+                ff = h.ConicalFarField(run.problem, run.solution, surf)
+                phis = np.linspace(0.0, 2 * np.pi, 361)
+                F = np.array([np.asarray(ff.pattern(float(a)), dtype=complex) for a in phis])
+                ratio = float(ff.transverse_wavenumber) / float(ff.wavenumber)
+                res["farfield_phi"] = phis.tolist()
+                res["farfield_dsigma"] = (ratio * (np.abs(F) ** 2).sum(axis=1)).tolist()          # d sigma / d phi [m], |E0| = 1
+            except Exception as exc:
+                say(f"WARN Querschnitte der Bibliothek nicht berechnet: {exc}")
+            circles = [s_ for s_ in model["shapes"] if s_["type"] == "circle"]
+            if len(model["shapes"]) == 1 and circles and abs(phi) < 1e-9:
+                try:
+                    n_c = complex(np.sqrt(ctx.eps[circles[0]["material"]] + 0j))
+                    res["mie"] = mie_cylinder(ctx.lam_nm, circles[0]["radius"], n_c, ctx.n_cover, pol)
+                except Exception as exc:
+                    say(f"WARN Mie-Referenz nicht berechnet: {exc}")
+    dets = []
+    inc_per_width = 0.5 * ctx.n_cover * np.cos(th) / Z0                         # incident power through a horizontal line per unit width
+    for d in model.get("detectors", []):
+        y, x0, x1 = d["y_nm"] * 1e-9, d["x0_nm"] * 1e-9, d["x1_nm"] * 1e-9
+        f = line_flux(run, (x0, y), (x1, y), (0, -1), False)
+        dets.append(dict(name=d.get("name", ""), y_nm=d["y_nm"], x0_nm=d["x0_nm"], x1_nm=d["x1_nm"], P_down=f,
+                         normalised=(f / (inc_per_width * (x1 - x0)) if f is not None and inc_per_width > 0 else None)))
+    res["detectors"] = dets
+    return res
 
 
 def grating_options(case, ctx, solver):
@@ -510,6 +710,9 @@ def triangulation_data(case, ctx, run, res, theta, phi, pol, subdivisions):
     tol = 1e-9 * case.P
     y = pts[:, 1]
     keep = (y[simp] >= case.y_phys_bottom - tol).all(axis=1) & (y[simp] <= case.y_phys_top + tol).all(axis=1)
+    if case.isolated:
+        x_ = pts[:, 0]
+        keep &= (x_[simp] >= -tol).all(axis=1) & (x_[simp] <= case.P + tol).all(axis=1)
     simp, tag = simp[keep], tag[keep]
     used = np.unique(simp)
     remap = np.full(len(pts), -1, dtype=np.int64)
@@ -539,6 +742,9 @@ def absorbed_exact(case, ctx, run, res):
     V, C = np.asarray(run.mesh.vertices), np.asarray(run.mesh.cells)
     cy = V[C][:, :, 1].mean(axis=1)
     phys = (cy > case.y_phys_bottom) & (cy < case.y_phys_top)
+    if case.isolated:
+        cx = V[C][:, :, 0].mean(axis=1)
+        phys &= (cx > 0.0) & (cx < case.P)
     tags = np.array([int(run.mesh.cell_tag(k)) for k in range(len(C))])
     norm = res["S_inc"] * case.P
     by = {}
@@ -782,7 +988,10 @@ def solve_point(case, lam_nm, theta, phi, pol, order, solver, want_map=None, fir
     engine = solver.get("engine", "conical")
     ctx = prepare(case, lam_nm)
     hpmesh = None
-    if engine == "grating":
+    if case.isolated or engine == "isolated":
+        run = IsolatedRun(case, ctx, theta, phi, pol, order, solver)
+        res = iso_result(case, ctx, run, theta, phi, pol, order)
+    elif engine == "grating":
         keep = bool(solver.get("jacobian"))
         run = GratingRun(case, ctx, theta, phi, pol, order, solver, keep=keep, check=bool(solver.get("check", True)))
         res = make_result(case, ctx, run, theta, phi, pol, order, run.extra())
@@ -915,7 +1124,10 @@ def check_job(hpfem, case, job, folder):
     values = sw["values"] if sw["mode"] != "none" else [None]
     p = int(solver["adaptive"]["p0"]) if solver.get("engine", "").endswith("_hp") else int(solver["order"])
     out = dict(version_info=version_info(hpfem), cells=int(case.mesh.num_cells), order=p, estimate=memory_estimate(case, p, solver))
-    if has_grating(hpfem):
+    if case.isolated:
+        out["diagnostics"] = None
+        out["note"] = "Isolierte Struktur: die Prüfungen der Bibliothek (hpfem.grating.validate) gelten für periodische Zellen; nur die Speicherschätzung."
+    elif has_grating(hpfem):
         import hpfem.grating as grating
         diags = []
         for v in [values[0]] + ([values[-1]] if len(values) > 1 else []):
@@ -983,6 +1195,9 @@ def main(argv=None) -> int:
     inc, sw, solver = job["incidence"], job["sweep"], job["solver"]
     task = job.get("task", "scattering")
     engine = solver.get("engine", "conical")
+    if case.isolated:
+        engine = "isolated"
+        solver = dict(solver, engine="isolated")
     if (engine.startswith("grating") or task == "resonances") and not has_grating(hpfem):
         say("ERROR Dieses hpfem hat kein hpfem.grating (hp-FEM 0.4 oder neuer nötig): Löser „konisch (klassisch)“ wählen oder hpfem aktualisieren")
         return 1
@@ -1037,7 +1252,7 @@ def main(argv=None) -> int:
     pscan = job.get("pscan")
     if pscan:                                                      # convergence in the polynomial order at the first sweep value
         lam, th, ph = point_values(job, values[0])
-        scan_engine = "grating" if engine.startswith("grating") else ("conical" if engine == "conical" else "inplane")
+        scan_engine = "isolated" if case.isolated else ("grating" if engine.startswith("grating") else ("conical" if engine == "conical" else "inplane"))
         for k, p in enumerate(pscan):
             if Control.cancelled():
                 return stop()
@@ -1045,7 +1260,11 @@ def main(argv=None) -> int:
             try:
                 res, _, _, _ = solve_point(case, lam, th, ph, inc["pol"], p, dict(solver, engine=scan_engine, jacobian=False))
                 out["pscan"].append(res)
-                say(f"  p = {p}: {res['dofs']} DoFs, {res['time_s']:.1f} s, R = {res['R']:.6f}" + (f", T = {res['T']:.6f}" if res["T"] is not None else ""))
+                if res.get("isolated"):
+                    say(f"  p = {p}: {res['dofs']} DoFs, {res['time_s']:.1f} s" + (f", sigma_sca = {res['sigma_sca']:.6e} m" if res.get("sigma_sca") is not None else "")
+                        + "".join(f", {d['name']}: {d['P_down']:.6e} W/m" for d in res["detectors"] if d["P_down"] is not None))
+                else:
+                    say(f"  p = {p}: {res['dofs']} DoFs, {res['time_s']:.1f} s, R = {res['R']:.6f}" + (f", T = {res['T']:.6f}" if res["T"] is not None else ""))
             except Cancelled:
                 return stop()
             except Exception as exc:
@@ -1071,6 +1290,20 @@ def main(argv=None) -> int:
             if hpm is not None:
                 np.savez_compressed(folder / f"hpmesh_{i}.npz", **hpm)
             report_diagnostics(res, printed)
+            if res.get("isolated"):
+                msg = f"  {res['dofs']} DoFs, {res['time_s']:.1f} s"
+                if res.get("sigma_sca") is not None:
+                    msg += f": sigma_sca = {res['sigma_sca'] * 1e9:.5g} nm"
+                if res.get("sigma_ext") is not None:
+                    msg += f", sigma_abs = {res['sigma_abs'] * 1e9:.5g} nm, sigma_ext = {res['sigma_ext'] * 1e9:.5g} nm"
+                if res.get("mie"):
+                    msg += f" | Mie: {res['mie']['sigma_sca'] * 1e9:.5g} / {res['mie']['sigma_abs'] * 1e9:.5g} / {res['mie']['sigma_ext'] * 1e9:.5g} nm"
+                for d in res["detectors"]:
+                    if d["P_down"] is not None:
+                        msg += f" | {d['name']}: {d['P_down']:.6e} W/m (normiert {d['normalised']:.6f})"
+                say(msg)
+                flush()
+                continue
             msg = f"  {res['dofs']} DoFs, {res['time_s']:.1f} s: R = {res['R']:.6f}"
             if res["T"] is not None:
                 msg += f", T = {res['T']:.6f}, A = {res['A']:.6f}"

@@ -5,7 +5,11 @@ medium, lossless), then finite layers (top to bottom), then the substrate. Shape
 in the cell, may reach into the cover or into the layers and the substrate and wrap around the cell edges (periodic continuation); a later
 shape covers earlier shapes and the layers.
 
-Vertical layout (bottom to top): [PML below | PEC wall] substrate | layers | cover | PML above. The mesh is conforming: every interface of the
+Vertical layout (bottom to top): [PML below | PEC wall] substrate | layers | cover | PML above.
+Lateral boundaries (domain["lateral"]): "periodic" (Bloch, the cell 0 ... P is repeated) or "pml" (an isolated structure: the inner region
+0 ... P with PML layers of domain["pml_side_nm"] left and right, a PEC wall behind them; the stack layers run through the PML). For isolated
+structures a closed measurement box (mesh lines) surrounds the shapes, and model["detectors"] = [{name, y_nm, x0_nm, x1_nm}] are horizontal
+segments on which the worker integrates the energy flow of the total field. The mesh is conforming: every interface of the
 stack and every shape boundary is a mesh line. Physical groups for the hpfem Gmsh reader (MSH 4.1 ASCII):
     surfaces: tag = 1 + index of the material in model["materials"]   (name = material name)
     curves:   left = 1, right = 2 (periodic pair), bottom = 3, top = 4  (hpfem.box_tag, as hpfem.grating expects)
@@ -53,7 +57,9 @@ def default_model():
         "period_nm": 400.0,
         "materials": {"Luft": {"type": "library", "name": "air"}, "Si": {"type": "library", "name": "Si"}},
         "cover": "Luft", "layers": [], "substrate": "Si", "shapes": [],
-        "domain": {"cover_nm": 600.0, "substrate_nm": 600.0, "pml_top_nm": 600.0, "pml_bottom_nm": 0.0, "bottom": "pec"},
+        "domain": {"cover_nm": 600.0, "substrate_nm": 600.0, "pml_top_nm": 600.0, "pml_bottom_nm": 0.0, "bottom": "pec", "lateral": "periodic",
+                   "pml_side_nm": 0.0},
+        "detectors": [],
         "incidence": {"pol": "TM", "theta": 50.0, "phi": 0.0, "wavelength_nm": 405.0},
         "sweep": {"mode": "none", "start": 400.0, "stop": 700.0, "n": 7},
     }
@@ -130,8 +136,14 @@ def parse_points(text):
     return pts
 
 
+def isolated(model):
+    """True for an isolated (non-periodic) structure with PML left and right."""
+    return model.get("domain", {}).get("lateral", "periodic") == "pml"
+
+
 def layout(model):
-    """Vertical layout in nm: interfaces of the stack, physical region and PML, slabs bottom to top."""
+    """Vertical layout in nm: interfaces of the stack, physical region and PML, slabs bottom to top; for isolated structures also the lateral
+    extent with PML and the measurement box around the shapes."""
     d, P = model["domain"], model["period_nm"]
     thick = [l["thickness_nm"] for l in model["layers"]]
     interfaces = [0.0]
@@ -153,8 +165,19 @@ def layout(model):
         slabs.append((interfaces[i + 1], interfaces[i], model["layers"][i]["material"], "layer"))
     slabs.append((0.0, y_cover_top, model["cover"], "cover"))
     slabs.append((y_cover_top, y_pml_top, model["cover"], "pml"))
-    return dict(interfaces=interfaces, y_struct_top=y_struct_top, y_cover_top=y_cover_top, y_pml_top=y_pml_top, y_sub_bottom=y_sub_bottom,
-                y_pml_bottom=y_pml_bottom, y_min=y_pml_bottom, y_max=y_pml_top, pml_bottom=pml_bottom, slabs=slabs, period=P)
+    out = dict(interfaces=interfaces, y_struct_top=y_struct_top, y_cover_top=y_cover_top, y_pml_top=y_pml_top, y_sub_bottom=y_sub_bottom,
+               y_pml_bottom=y_pml_bottom, y_min=y_pml_bottom, y_max=y_pml_top, pml_bottom=pml_bottom, slabs=slabs, period=P,
+               isolated=isolated(model), x_min=0.0, x_max=P)
+    if out["isolated"]:
+        ps = float(d.get("pml_side_nm", 0.0))
+        out.update(x_min=-ps, x_max=P + ps, pml_side=ps)
+        ext = shapes_x_extent(model)
+        if ext is not None:
+            bottoms = [shape_bbox(s_)[2] for s_ in model["shapes"]]
+            y_low = min(min(bottoms), interfaces[-1])
+            out["box"] = dict(x0=0.5 * max(ext[0], 0.0), x1=0.5 * (min(ext[1], P) + P),
+                              y0=y_low - 0.5 * (y_low - y_sub_bottom), y1=y_struct_top + 0.5 * (y_cover_top - y_struct_top))
+    return out
 
 
 def material_index_map(model, X, Y):
@@ -165,7 +188,7 @@ def material_index_map(model, X, Y):
     out = np.zeros(np.shape(X), dtype=int)
     for y0, y1, mat, _ in lay["slabs"]:
         out[(Y >= y0) & (Y <= y1)] = names.index(mat)
-    Xw = np.mod(X, P)
+    Xw = np.asarray(X) if isolated(model) else np.mod(X, P)
     for s in model["shapes"]:
         hit = np.zeros(np.shape(X), dtype=bool)
         for off in (-P, 0.0, P):
@@ -216,8 +239,23 @@ def validate(model, lam_nm=None):
                         msgs.append(("warn", f"Form {i + 1} ({SHAPE_TYPES[s['type']][0]}) berührt die Grenzfläche bei y = {yi:.0f} nm fast oder genau tangential: "
                                              "im Netz entsteht ein extrem schmaler Keil mit verzerrten Dreiecken. Die Form 1–2 nm eintauchen lassen."))
                         break
-            if x1 - x0 > P + 1e-9:
+            if lay["isolated"]:
+                if x0 < -1e-9 or x1 > P + 1e-9:
+                    msgs.append(("error", f"Form {i + 1} ragt aus dem Innengebiet (x von {x0:.0f} bis {x1:.0f} nm, erlaubt 0 bis {P:.0f} nm): bei einer "
+                                          "isolierten Struktur Breite des Innengebiets vergrößern oder die Form verschieben."))
+                elif min(x0, P - x1) < 0.05 * P:
+                    msgs.append(("warn", f"Form {i + 1} liegt sehr nah an der seitlichen PML: das Nahfeld reicht hinein, die Messbox wird schmal."))
+            elif x1 - x0 > P + 1e-9:
                 msgs.append(("warn", f"Form {i + 1} ist breiter als die Periode ({x1 - x0:.0f} nm > {P:.0f} nm): überlappt mit ihren Nachbarn."))
+        if lay["isolated"]:
+            if d.get("pml_side_nm", 0.0) <= 0:
+                msgs.append(("error", "Isolierte Struktur: die seitliche PML braucht eine Dicke > 0."))
+            if not model["shapes"]:
+                msgs.append(("warn", "Isolierte Struktur ohne Formen: es gibt nichts zu streuen (nur der ebene Stapel)."))
+            for k, det in enumerate(model.get("detectors", [])):
+                if not (0 <= det["x0_nm"] < det["x1_nm"] <= P) or not (lay["y_sub_bottom"] <= det["y_nm"] <= lay["y_cover_top"]):
+                    msgs.append(("error", f"Detektor {k + 1} ({det.get('name', '')}) liegt nicht im Innengebiet (x 0 … {P:.0f} nm, "
+                                          f"y {lay['y_sub_bottom']:.0f} … {lay['y_cover_top']:.0f} nm)."))
         if lam_nm is not None:
             try:
                 e = fm.eps_at(model["materials"][model["cover"]], lam_nm)
@@ -373,6 +411,8 @@ def preview_figure(model, show_neighbours=True, figsize=(7.2, 6.0)):
 
     P = model["period_nm"]
     lay = layout(model)
+    if lay["isolated"]:
+        return _preview_isolated(model, lay, figsize)
     fig, ax = plt.subplots(figsize=figsize)
     offsets = (-P, 0.0, P) if show_neighbours else (0.0,)
     for off in offsets:
@@ -400,6 +440,49 @@ def preview_figure(model, show_neighbours=True, figsize=(7.2, 6.0)):
     ax.set_ylim(lay["y_min"], lay["y_max"])
     ax.set_aspect("equal")
     ax.set_xlabel("x (nm), rot gepunktet: Zellrand (periodisch)")
+    ax.set_ylabel("y (nm)")
+    ax.set_title(model.get("name", ""), fontsize=10)
+    fig.tight_layout()
+    return fig
+
+
+def _preview_isolated(model, lay, figsize):
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon, Rectangle
+
+    P, ps = model["period_nm"], lay["pml_side"]
+    fig, ax = plt.subplots(figsize=figsize)
+    for y0, y1, mat, kind in lay["slabs"]:
+        ax.add_patch(Rectangle((-ps, y0), P + 2 * ps, y1 - y0, facecolor=material_color(model, mat), edgecolor="none", zorder=1,
+                               hatch="///" if kind == "pml" else None))
+    for x0 in (-ps, P):
+        ax.add_patch(Rectangle((x0, lay["y_min"]), ps, lay["y_max"] - lay["y_min"], facecolor="none", edgecolor="0.45", hatch="\\\\", lw=0, zorder=2))
+    for s_ in model["shapes"]:
+        ax.add_patch(Polygon(shape_polygon(s_), closed=True, facecolor=material_color(model, s_["material"]), edgecolor="k", lw=1.0, zorder=3))
+    for y in lay["interfaces"]:
+        ax.plot([-ps, P + ps], [y, y], color="k", lw=0.6, ls="--", zorder=2)
+    for x in (0, P):
+        ax.axvline(x, color="0.3", lw=0.8, ls=":", zorder=4)
+    b = lay.get("box")
+    if b:
+        ax.plot([b["x0"], b["x1"], b["x1"], b["x0"], b["x0"]], [b["y0"], b["y0"], b["y1"], b["y1"], b["y0"]], color="C2", lw=0.9, ls="--", zorder=5)
+    for det in model.get("detectors", []):
+        ax.plot([det["x0_nm"], det["x1_nm"]], [det["y_nm"]] * 2, color="C3", lw=2.5, zorder=6)
+        ax.annotate(det.get("name", "Detektor"), ((det["x0_nm"] + det["x1_nm"]) / 2, det["y_nm"]), xytext=(0, -11), textcoords="offset points",
+                    ha="center", fontsize=8, color="C3")
+    ax.text(P / 2, lay["y_pml_top"], "PML", ha="center", va="top", fontsize=8, color="0.3", zorder=5)
+    if lay["pml_bottom"]:
+        ax.text(P / 2, lay["y_pml_bottom"], "PML", ha="center", va="bottom", fontsize=8, color="0.3", zorder=5)
+    else:
+        ax.plot([-ps, P + ps], [lay["y_min"]] * 2, color="k", lw=2.0, zorder=5)
+    for x in (-ps / 2, P + ps / 2):
+        ax.text(x, (lay["y_min"] + lay["y_max"]) / 2, "PML", ha="center", va="center", rotation=90, fontsize=8, color="0.3", zorder=5)
+    handles = [Rectangle((0, 0), 1, 1, facecolor=material_color(model, n), edgecolor="k") for n in model["materials"]]
+    ax.legend(handles, list(model["materials"]), loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8, title="Materialien")
+    ax.set_xlim(-ps, P + ps)
+    ax.set_ylim(lay["y_min"], lay["y_max"])
+    ax.set_aspect("equal")
+    ax.set_xlabel("x (nm); isoliert: PML links und rechts, grün: Messbox, rot: Detektoren")
     ax.set_ylabel("y (nm)")
     ax.set_title(model.get("name", ""), fontsize=10)
     fig.tight_layout()
@@ -535,6 +618,8 @@ def build_mesh(model, ms, out_dir, log=print):
     P = model["period_nm"]
     lay = layout(model)
     curved = bool(ms.get("curved", True)) and any(s["type"] in ("circle", "ellipse") for s in model["shapes"])
+    iso = lay["isolated"]
+    xa, xb = lay["x_min"], lay["x_max"]
     try:
         gmsh.initialize(interruptible=False)          # Streamlit runs scripts in a worker thread: no signal handler allowed there
     except TypeError:                                  # gmsh < 4.11 has no such argument
@@ -543,18 +628,29 @@ def build_mesh(model, ms, out_dir, log=print):
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("cell")
         occ = gmsh.model.occ
-        slab_tags = [occ.addRectangle(0, y0, 0, P, y1 - y0) for y0, y1, _, _ in lay["slabs"]]
-        cell = occ.addRectangle(0, lay["y_min"], 0, P, lay["y_max"] - lay["y_min"])
+        slab_list = []                                            # (y0, y1, material, kind) per rectangle
+        xcuts = [xa, 0.0, P, xb] if iso else [0.0, P]
+        slab_tags = []
+        for y0, y1, mat, kind in lay["slabs"]:
+            for i_ in range(len(xcuts) - 1):
+                slab_tags.append(occ.addRectangle(xcuts[i_], y0, 0, xcuts[i_ + 1] - xcuts[i_], y1 - y0))
+                slab_list.append((y0, y1, mat, "pml" if (iso and i_ != 1) else kind))
+        cell = occ.addRectangle(xa, lay["y_min"], 0, xb - xa, lay["y_max"] - lay["y_min"])
         pieces = []                                               # (dimtag, shape index)
         for idx, s in enumerate(model["shapes"]):
-            for off in _offsets_needed(s, P):
+            for off in ([0.0] if iso else _offsets_needed(s, P)):
                 tag = _make_shape(occ, s, off)
                 out, _ = occ.intersect([(2, tag)], [(2, cell)], removeObject=True, removeTool=False)
                 pieces += [(dt, idx) for dt in out if dt[0] == 2]
         occ.remove([(2, cell)], recursive=True)          # with recursive=False its four edges stay behind as free curves
         objs = [(2, t) for t in slab_tags]
         tools = [dt for dt, _ in pieces]
-        out, outmap = occ.fragment(objs, tools)
+        box_lines = []
+        if iso and lay.get("box"):                                # closed measurement box of the scattered power (mesh lines)
+            b = lay["box"]
+            c_ = [occ.addPoint(b["x0"], b["y0"], 0), occ.addPoint(b["x1"], b["y0"], 0), occ.addPoint(b["x1"], b["y1"], 0), occ.addPoint(b["x0"], b["y1"], 0)]
+            box_lines = [occ.addLine(c_[i_], c_[(i_ + 1) % 4]) for i_ in range(4)]
+        out, outmap = occ.fragment(objs, tools + [(1, l_) for l_ in box_lines])
         occ.synchronize()
         sources = {}                                               # surface -> list of input numbers
         for k, produced in enumerate(outmap):
@@ -563,22 +659,22 @@ def build_mesh(model, ms, out_dir, log=print):
                     sources.setdefault(tag, []).append(k)
         surf_mat, surf_kind = {}, {}
         for tag, srcs in sources.items():
-            shape_srcs = [pieces[k - len(objs)][1] for k in srcs if k >= len(objs)]
+            shape_srcs = [pieces[k - len(objs)][1] for k in srcs if len(objs) <= k < len(objs) + len(pieces)]
             if shape_srcs:
                 surf_mat[tag] = model["shapes"][max(shape_srcs)]["material"]
                 surf_kind[tag] = "shape"
             else:
-                slab_i = min(srcs)
-                surf_mat[tag] = lay["slabs"][slab_i][2]
-                surf_kind[tag] = lay["slabs"][slab_i][3]
+                slab_i = min(k for k in srcs if k < len(objs))
+                surf_mat[tag] = slab_list[slab_i][2]
+                surf_kind[tag] = slab_list[slab_i][3]
         e = 1e-6 * max(P, 1.0)
         ymin, ymax = lay["y_min"], lay["y_max"]
         used_curves = {c[1] for c in gmsh.model.getBoundary([(2, t) for t in surf_mat], combined=False, oriented=False, recursive=False)}
         sides = {
-            TAG_LEFT: gmsh.model.getEntitiesInBoundingBox(-e, ymin - e, -e, e, ymax + e, e, 1),
-            TAG_RIGHT: gmsh.model.getEntitiesInBoundingBox(P - e, ymin - e, -e, P + e, ymax + e, e, 1),
-            TAG_BOTTOM: gmsh.model.getEntitiesInBoundingBox(-e, ymin - e, -e, P + e, ymin + e, e, 1),
-            TAG_TOP: gmsh.model.getEntitiesInBoundingBox(-e, ymax - e, -e, P + e, ymax + e, e, 1),
+            TAG_LEFT: gmsh.model.getEntitiesInBoundingBox(xa - e, ymin - e, -e, xa + e, ymax + e, e, 1),
+            TAG_RIGHT: gmsh.model.getEntitiesInBoundingBox(xb - e, ymin - e, -e, xb + e, ymax + e, e, 1),
+            TAG_BOTTOM: gmsh.model.getEntitiesInBoundingBox(xa - e, ymin - e, -e, xb + e, ymin + e, e, 1),
+            TAG_TOP: gmsh.model.getEntitiesInBoundingBox(xa - e, ymax - e, -e, xb + e, ymax + e, e, 1),
         }
         sides = {k: [c for c in v if c[1] in used_curves] for k, v in sides.items()}
         for tag, nm in ((TAG_LEFT, "left"), (TAG_RIGHT, "right"), (TAG_BOTTOM, "bottom"), (TAG_TOP, "top")):
@@ -589,7 +685,8 @@ def build_mesh(model, ms, out_dir, log=print):
             surfs = [t for t, m in surf_mat.items() if m == name]
             if surfs:
                 gmsh.model.addPhysicalGroup(2, surfs, 1 + names.index(name), name)
-        gmsh.model.mesh.setPeriodic(1, [c[1] for c in sides[TAG_RIGHT]], [c[1] for c in sides[TAG_LEFT]], [1, 0, 0, P, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+        if not iso:
+            gmsh.model.mesh.setPeriodic(1, [c[1] for c in sides[TAG_RIGHT]], [c[1] for c in sides[TAG_LEFT]], [1, 0, 0, P, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
         # element sizes at the points: wavelength in the material, refined at interfaces
         size_of = {n: _size_of(model["materials"][n], ms["lam_min_nm"], ms["lam_max_nm"], ms) for n in names}
         n_pml = float(ms.get("pml_cells_per_wavelength", 0.0) or 0.0)
@@ -644,7 +741,7 @@ def build_mesh(model, ms, out_dir, log=print):
         # periodic check: the nodes on the left and right sides must be copies of each other
         left_y = np.sort(np.unique(np.round(xy[np.abs(xy[:, 0]) < 1e-6, 1], 6)))
         right_y = np.sort(np.unique(np.round(xy[np.abs(xy[:, 0] - P) < 1e-6, 1], 6)))
-        periodic_ok = len(left_y) == len(right_y) and bool(np.allclose(left_y, right_y, atol=1e-5))
+        periodic_ok = True if iso else (len(left_y) == len(right_y) and bool(np.allclose(left_y, right_y, atol=1e-5)))
         a, b, c = xy[tris[:, 0]], xy[tris[:, 1]], xy[tris[:, 2]]
         lens = np.stack([np.linalg.norm(b - a, axis=1), np.linalg.norm(c - b, axis=1), np.linalg.norm(a - c, axis=1)], axis=1)
         s = lens.sum(axis=1) / 2
@@ -695,6 +792,37 @@ def mesh_figure(plot_npz, model=None, figsize=(7.2, 6.0), zoom=None):
 # --------------------------------------------------------------------------------------------------------------- presets
 def _mat_lib(n):
     return {"type": "library", "name": n}
+
+
+def iso_presets():
+    """Isolated structures (PML left and right) with references: Mie cylinder and the slit-groove benchmark."""
+    P = {}
+    m = default_model()
+    m.update(name="Isolierter Zylinder n = 1,5 in Luft (Mie-Test)", period_nm=1400.0,
+             materials={"Luft": _mat_lib("air"), "Glas": {"type": "index", "n": 1.5, "k": 0.0}}, cover="Luft", substrate="Luft", layers=[],
+             shapes=[dict(type="circle", material="Glas", x_center=700.0, y_center=300.0, radius=200.0)], detectors=[])
+    m["domain"].update(lateral="pml", pml_side_nm=700.0, cover_nm=400.0, substrate_nm=400.0, pml_top_nm=700.0, pml_bottom_nm=700.0, bottom="pml")
+    m["incidence"].update(pol="TE", theta=0.0, phi=0.0, wavelength_nm=700.0)
+    m["sweep"].update(mode="wavelength", start=500.0, stop=1000.0, n=11)
+    P[m["name"]] = m
+    m = default_model()
+    ag = {"type": "eps", "re": -33.22, "im": 1.17}
+    m.update(name="Slit-Groove-Benchmark (Ag-Film, Schlitz + Rille), S", period_nm=6000.0,
+             materials={"Luft": _mat_lib("air"), "Ag": ag, "Substrat": {"type": "eps", "re": 2.25, "im": 0.0}}, cover="Luft", substrate="Substrat",
+             layers=[dict(material="Ag", thickness_nm=400.0)],
+             shapes=[dict(type="rect", material="Luft", x_center=3000.0, y_bottom=-400.0, width=100.0, height=400.0),
+                     dict(type="rect", material="Luft", x_center=2500.0, y_bottom=-100.0, width=100.0, height=100.0)],
+             detectors=[dict(name="S (unter dem Schlitz)", y_nm=-1200.0, x0_nm=2900.0, x1_nm=3100.0)])
+    m["domain"].update(lateral="pml", pml_side_nm=2000.0, cover_nm=1000.0, substrate_nm=1200.0, pml_top_nm=2000.0, pml_bottom_nm=2000.0, bottom="pml")
+    m["incidence"].update(pol="TM", theta=0.0, phi=0.0, wavelength_nm=852.0)
+    m["sweep"].update(mode="none")
+    P[m["name"]] = m
+    m0 = copy.deepcopy(m)
+    m0["name"] = "Slit-Groove-Benchmark ohne Rille (Referenz S₀)"
+    m0["shapes"] = m0["shapes"][:1]
+    m0["detectors"] = [dict(name="S₀ (unter dem Schlitz)", y_nm=-1200.0, x0_nm=2900.0, x1_nm=3100.0)]
+    P[m0["name"]] = m0
+    return P
 
 
 def presets():
@@ -759,6 +887,7 @@ def presets():
         sw, inc = m["sweep"], m["incidence"]
         lams = [sw["start"], sw["stop"]] if sw["mode"] == "wavelength" else [inc["wavelength_nm"]]
         m["domain"] = suggest_domain(m, min(lams), max(lams))
+    P.update(iso_presets())
     return P
 
 
@@ -771,4 +900,6 @@ def load_model(text):
     base = default_model()
     for k, v in base.items():
         m.setdefault(k, v)
+    for k, v in base["domain"].items():
+        m["domain"].setdefault(k, v)
     return m

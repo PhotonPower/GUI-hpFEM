@@ -321,6 +321,134 @@ if proc is not None:
         st.rerun()
     st.stop()
 
+def maps_view(view, res, rmodel, periodic=True):
+    maps = sorted(view.glob("maps_*.npz"), key=lambda p: int(p.stem.split("_")[1]))
+    if not maps:
+        st.info("Für diese Rechnung wurden keine Feldkarten gespeichert (Reiter 3: „Feldkarten speichern“).")
+    else:
+        c = st.columns(4)
+        which = c[0].selectbox("Punkt Nr.", [int(p.stem.split("_")[1]) for p in maps], key="map_which")
+        tri_file = view / f"tri_{which}.npz"
+        with np.load(view / f"maps_{which}.npz") as z_:
+            has_ = {"H": "H" in z_.files, "S": "S" in z_.files}
+        qopts = [k for k in fp.QUANTITIES if (has_["H"] or not (fp.QUANTITIES[k][0] == "Habs" or fp.QUANTITIES[k][0][0] == "h"))
+                 and (has_["S"] or not (fp.QUANTITIES[k][0] == "Sabs" or fp.QUANTITIES[k][0][0] == "s"))]
+        qkey = c[1].selectbox("Größe", qopts, key="map_q",
+                              help="H und der Poynting-Vektor S stehen zur Verfügung, wenn die Rechnung sie gespeichert hat (hpfem ab 0.4).")
+        periods = c[2].selectbox("Perioden", [1, 2, 3], key="map_periods") if periodic else 1
+        cmap = c[3].selectbox("Farbskala", ["automatisch", "inferno", "viridis", "magma", "turbo", "RdBu_r", "coolwarm"], key="map_cm")
+        c = st.columns(4)
+        logs = c[0].checkbox("logarithmisch", key="map_log")
+        geo = c[1].checkbox("Geometrie einzeichnen", value=True, key="map_geo")
+        msh = c[2].checkbox("Netz einzeichnen", key="map_mesh")
+        vmax_txt = c[3].text_input("Obergrenze der Skala (leer = automatisch)", "", key="map_vmax")
+        pt = next(p for p in res["points"] if p.get("index") == which)
+        A_en = pt["A"] if pt.get("A") is not None else pt.get("A_incl_substrate")
+        try:
+            vmax = float(vmax_txt) if vmax_txt.strip() else None
+        except ValueError:
+            vmax = None
+        rep = st.radio("Darstellung", ["Elemente (exakt)", "Raster"], horizontal=True, key="map_rep",
+                       help="Elemente: Feld auf den unterteilten Dreiecken des Netzes, Sprünge an Materialgrenzen scharf. Raster: reguläres Gitter.") \
+            if tri_file.is_file() else "Raster"
+        if rep.startswith("Elemente"):
+            tri = fp.load_tri(tri_file)
+            show_fig(fp.fig_map_tri(tri, fp.derived_tri(tri, rmodel), rmodel, qkey, periods=periods, cmap=None if cmap == "automatisch" else cmap, vmax=vmax,
+                                    log=logs, show_geometry=geo), f"karte_{which}_elemente.png", "dl_map")
+            if msh:
+                st.caption("Das Netz lässt sich nur in der Rasterdarstellung einzeichnen.")
+        else:
+            mp = fp.load_map(view / f"maps_{which}.npz")
+            d = fp.derived(mp, rmodel, A_en)
+            show_fig(fp.fig_map(mp, d, rmodel, qkey, periods=periods, cmap=None if cmap == "automatisch" else cmap, vmax=vmax, log=logs,
+                                mesh_npz=(view / "mesh_plot.npz") if msh else None, show_geometry=geo), f"karte_{which}.png", "dl_map")
+        st.caption("Feld in den Achsen der Rechnung: x entlang der Periode, y vertikal, z entlang der Linien. Einfallende Welle mit Amplitude |E₀| = 1.")
+
+
+def cuts_view(view, rmodel):
+    maps = sorted(view.glob("maps_*.npz"), key=lambda p: int(p.stem.split("_")[1]))
+    if not maps:
+        st.info("Keine Feldkarten gespeichert.")
+    else:
+        c = st.columns(3)
+        which = c[0].selectbox("Punkt Nr.", [int(p.stem.split("_")[1]) for p in maps], key="cut_which")
+        axis = c[1].radio("Schnitt", ["vertikal (bei festem x)", "horizontal (bei festem y)"], key="cut_axis")
+        mp = fp.load_map(view / f"maps_{which}.npz")
+        d = fp.derived(mp, rmodel)
+        if axis.startswith("vertikal"):
+            pos = c[2].slider("x (nm)", float(d["x"][0]), float(d["x"][-1]), float((d["x"][0] + d["x"][-1]) / 2), key="cut_x")
+            show_fig(fp.fig_cut(d, rmodel, "y", pos), "schnitt_vertikal.png", "dl_cut")
+        else:
+            pos = c[2].slider("y (nm)", float(d["y"][0]), float(d["y"][-1]), 0.0, key="cut_y")
+            show_fig(fp.fig_cut(d, rmodel, "x", pos), "schnitt_horizontal.png", "dl_cut")
+
+
+def iso_results(view, res, rmodel, mode):
+    """Results of an isolated structure (PML left and right): widths, detectors, far field, maps, cuts, convergence, table."""
+    pts = res["points"]
+    ok = [p for p in pts if "error" not in p]
+    ext = fg.shapes_x_extent(rmodel)
+    width = (ext[1] - ext[0]) if ext else None
+    sub = st.tabs(["Querschnitte", "Detektoren", "Streudiagramm", "Feldkarten", "Schnitte", "Konvergenz in p", "Tabelle und Export"])
+    with sub[0]:
+        if ok:
+            show_fig(fp.fig_widths(ok, mode, width), "querschnitte.png", "dl_iso_w")
+            mie = [p for p in ok if p.get("mie") and p.get("sigma_sca") is not None]
+            if mie:
+                dev = max(abs(p["sigma_sca"] - p["mie"]["sigma_sca"]) / max(p["mie"]["sigma_sca"], 1e-30) for p in mie)
+                dex = max(abs(p["sigma_ext"] - p["mie"]["sigma_ext"]) / max(p["mie"]["sigma_ext"], 1e-30) for p in mie if p.get("sigma_ext") is not None) \
+                    if any(p.get("sigma_ext") is not None for p in mie) else None
+                (st.success if dev < 1e-2 else st.warning)(f"Einzelner Kreiszylinder: Vergleich mit der Mie-Reihe, größte relative Abweichung Streuung "
+                                                           f"{dev:.1e}" + (f", Extinktion {dex:.1e}" if dex is not None else "") + ".")
+            if not any(p.get("sigma_ext") is not None for p in ok):
+                st.info("Mit Schichtstapel gibt es nur die Streubreite (Leistung des Streufelds aus der Messbox) und den Anteil nach oben: die "
+                        "Absorption der Bibliothek enthält die Absorption des ebenen Stapels und ist dort kein Querschnitt. Detektoren (nächster Reiter) "
+                        "messen den Energiefluss des Gesamtfelds.")
+            st.caption("Querschnitte je Längeneinheit (2D, „Breiten“) in nm: Leistung je Meter Länge geteilt durch die einfallende Intensität n|E₀|²/(2Z₀) "
+                       "im Einfallsmedium. σ_sca aus dem Fluss des Streufelds durch die geschlossene Messbox (grün in der Vorschau); in homogener Umgebung "
+                       "σ_abs und σ_ext aus hpfem (conical_cross_sections). Effizienz rechts: σ geteilt durch die Breite der Formen.")
+        else:
+            st.info("Keine auswertbaren Punkte.")
+    with sub[1]:
+        if ok and ok[0].get("detectors"):
+            show_fig(fp.fig_detectors(ok, mode), "detektoren.png", "dl_iso_det")
+            rows = [{"Nr": p["index"], "λ (nm)": p["lam_nm"], "Detektor": d["name"], "y (nm)": d["y_nm"], "x von–bis (nm)": f"{d['x0_nm']:g}–{d['x1_nm']:g}",
+                     "P nach unten (W/m)": d["P_down"], "normiert": d["normalised"]} for p in ok for d in p["detectors"]]
+            table_show(pd.DataFrame(rows))
+            st.caption("Energiefluss des Gesamtfelds nach unten (−y) durch die Detektorstrecke, je Meter Länge, für |E₀| = 1 V/m; normiert auf den "
+                       "einfallenden Fluss durch dieselbe Breite im Einfallsmedium. Für Vergleiche zweier Rechnungen (z. B. S/S₀ im Slit-Groove-Benchmark) "
+                       "die Werte „P nach unten“ beider Rechnungen teilen.")
+        else:
+            st.info("Keine Detektoren im Modell (Reiter 1, Rechengebiet).")
+    with sub[2]:
+        ff = [p for p in ok if p.get("farfield_dsigma")]
+        if ff:
+            idx = st.selectbox("Punkt Nr.", [p["index"] for p in ff], key="iso_ff_pick")
+            show_fig(fp.fig_farfield_iso(next(p for p in ff if p["index"] == idx)), "streudiagramm.png", "dl_iso_ff")
+            st.caption("Differentielle Streubreite dσ/dφ aus dem Fernfeld (hpfem ConicalFarField) in der Ebene senkrecht zu den Linien; nur in homogener "
+                       "Umgebung (mit Substrat gilt die Fernfeld-Transformation der Bibliothek nicht).")
+        else:
+            st.info("Kein Fernfeld: nur in homogener Umgebung (gleiches Material oben und unten, keine Schichten, PML unten).")
+    with sub[3]:
+        maps_view(view, res, rmodel, periodic=False)
+    with sub[4]:
+        cuts_view(view, rmodel)
+    with sub[5]:
+        if res.get("pscan"):
+            show_fig(fp.fig_pscan(res["pscan"]), "konvergenz_p.png", "dl_iso_pscan")
+            table_show(fp.iso_dataframe(res["pscan"], "none"))
+        else:
+            st.info("Keine Konvergenzstudie in dieser Rechnung (Reiter 3: „Konvergenzstudie in p“).")
+    with sub[6]:
+        df = fp.iso_dataframe(pts, mode)
+        if len(df):
+            table_show(df)
+            st.download_button("Ergebnisse (CSV)", csv_bytes(df), file_name="ergebnisse_isoliert.csv", mime="text/csv", key="dl_iso_csv")
+        st.download_button("Modell dieser Rechnung (JSON)", json.dumps(rmodel, indent=1, ensure_ascii=False).encode("utf-8"), file_name="modell_der_rechnung.json",
+                           mime="application/json", key="dl_iso_model")
+        st.caption(f"Ordner mit allen Dateien: {view}")
+
+
 # ------------------------------------------------------------------------------------------------- body of revolution mode
 if app_mode == "axi":
     fem_axi_app.render(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
@@ -337,8 +465,26 @@ with t_model:
     inc, sw, dom = model["incidence"], model["sweep"], model["domain"]
     with left:
         model["name"] = st.text_input("Name des Modells", value=model["name"], key=f"name_{ver}")
-        new_period = float(st.number_input("Periode P (nm)", value=float(model["period_nm"]), min_value=1.0, step=10.0, format="%.6g",
-                                           key=f"period_{ver}", help="Breite der Elementarzelle in x. Das Gitter setzt sich periodisch fort."))
+        dom_ = model["domain"]
+        dom_.setdefault("lateral", "periodic")
+        dom_.setdefault("pml_side_nm", 0.0)
+        model.setdefault("detectors", [])
+        LAT = {"periodic": "periodisch (Gitter, Bloch-Ränder)", "pml": "isoliert (einzelne Struktur, PML links und rechts)"}
+        lat = st.radio("Seitliche Ränder", list(LAT), index=list(LAT).index(dom_["lateral"]), format_func=LAT.get, horizontal=True, key=f"lat_{ver}",
+                       help="Isoliert: eine einzelne Struktur (Draht, Graben, Schlitz, Stufe) im Schichtstapel; links und rechts absorbieren PML-Schichten, "
+                            "die Schichten laufen hindurch. Ergebnisse: Streu-, Absorptions- und Extinktionsbreite, Fernfeld, Detektoren, Felder.")
+        if lat != dom_["lateral"]:
+            dom_["lateral"] = lat
+            if lat == "pml" and dom_["pml_side_nm"] <= 0:
+                dom_["pml_side_nm"] = float(max(dom_.get("pml_top_nm", 600.0), 300.0))
+            S.ver += 1
+            st.rerun()
+        iso_ = lat == "pml"
+        new_period = float(st.number_input("Breite des Innengebiets (nm)" if iso_ else "Periode P (nm)", value=float(model["period_nm"]), min_value=1.0,
+                                           step=10.0, format="%.6g",
+                                           key=f"period_{ver}", help="Isoliert: Breite des Gebiets zwischen den seitlichen PML-Schichten (Struktur plus Abstand). "
+                                                                        "Periodisch: Breite der Elementarzelle in x, das Gitter setzt sich fort." if iso_ else
+                                                                        "Breite der Elementarzelle in x. Das Gitter setzt sich periodisch fort."))
         if abs(new_period - model["period_nm"]) > 1e-12:
             if S.get("follow_period") and model["shapes"]:                       # keep the shapes centred when the period changes
                 fg.shift_shapes(model, (new_period - model["period_nm"]) / 2)
@@ -461,6 +607,27 @@ with t_model:
                                                            format="%.6g", key=f"pmlb_{ver}"))
         else:
             dom["pml_bottom_nm"] = 0.0
+        if fg.isolated(model):
+            c = st.columns(2)
+            dom["pml_side_nm"] = float(c[0].number_input("PML links und rechts (nm)", value=float(dom.get("pml_side_nm", 600.0)), min_value=50.0, step=50.0,
+                                                         format="%.6g", key=f"pmls_{ver}",
+                                                         help="Seitliche absorbierende Schichten; etwa so dick wie die PML oben. Bei schwach gedämpften "
+                                                              "Oberflächenplasmonen oder geführten Moden größer wählen."))
+            c[1].caption("Hinter den PML-Schichten liegt eine Metallwand. Die Messbox (grün) für die Streuleistung liegt automatisch zwischen der "
+                         "Struktur und dem Rand des Innengebiets.")
+            st.markdown("**Detektoren** (waagrechte Strecken; gemessen wird der Energiefluss des Gesamtfelds nach unten)")
+            txt = st.text_area("Eine Zeile je Detektor: Name; y (nm); x von (nm); x bis (nm)",
+                               value="\n".join(f"{d_['name']}; {d_['y_nm']:g}; {d_['x0_nm']:g}; {d_['x1_nm']:g}" for d_ in model.get("detectors", [])),
+                               key=f"dets_{ver}", height=90)
+            try:
+                dets = []
+                for line in txt.splitlines():
+                    if line.strip():
+                        a = [v.strip() for v in line.split(";")]
+                        dets.append(dict(name=a[0], y_nm=float(a[1]), x0_nm=float(a[2]), x1_nm=float(a[3])))
+                model["detectors"] = dets
+            except (ValueError, IndexError):
+                st.error("Detektoren: je Zeile Name; y; x von; x bis (Zahlen in nm).")
 
     with right:
         lam_lo, lam_hi = fr.wavelength_range(model)
@@ -494,7 +661,7 @@ with t_mesh:
     ms["cells_per_wavelength"] = float(c[0].slider("Elemente pro Wellenlänge", 1.0, 12.0, float(ms["cells_per_wavelength"]), 0.5, key="ms_cpw",
                                                    help="Bei hoher Polynomordnung p genügen etwa 12/p Elemente pro Wellenlänge im Material "
                                                         "(p = 4: 3, p = 3: 4, p = 2: 6). Mehr Elemente sind selten nötig und treiben die Freiheitsgrade hoch."))
-    ms["skin_cells"] = float(c[1].slider("Elemente pro Eindringtiefe (Metall)", 0.5, 4.0, float(ms["skin_cells"]), 0.5, key="ms_skin",
+    ms["skin_cells"] = float(c[1].slider("Elemente pro Eindringtiefe (Metall)", 0.2, 4.0, float(ms["skin_cells"]), 0.05, key="ms_skin",
                                          help="Feldabklinglänge 1/(k₀·k) im Metall, so viele Elemente darauf. Mit p = 4 genügt etwa 1."))
     ms["interface_factor"] = float(c[2].slider("Verfeinerung an Grenzflächen", 0.2, 1.0, float(ms["interface_factor"]), 0.05, key="ms_if",
                                                help="Faktor auf die Elementgröße an Materialgrenzen und Ecken (kleiner = feiner)."))
@@ -573,8 +740,8 @@ with t_run:
     st.markdown("Der Solver (hp-FEM, Löser für TE, TM und konischen Einfall) rechnet die Streuung einer ebenen Welle an der periodischen Struktur: "
                 "Bloch-Randbedingung in x, absorbierende Schichten (PML) oben und ggf. unten, analytischer Schichtstapel als Hintergrund.")
     has_grating = bool(FEATS.get("grating")) or bool(lib.get("error"))          # unknown library: offer it, the worker reports a missing API
-    TASKS = {"scattering": "Streuung: R, T, Beugungsordnungen, Felder", "resonances": "Resonanzen: Eigenmoden der offenen Zelle (komplexe Frequenz, Güte Q)"}
-    task_avail = ["scattering"] + (["resonances"] if (FEATS.get("resonances") or lib.get("error")) else [])
+    TASKS = {"scattering": "Streuung: Querschnitte, Detektoren, Fernfeld, Felder" if fg.isolated(model) else "Streuung: R, T, Beugungsordnungen, Felder", "resonances": "Resonanzen: Eigenmoden der offenen Zelle (komplexe Frequenz, Güte Q)"}
+    task_avail = ["scattering"] + (["resonances"] if (FEATS.get("resonances") or lib.get("error")) and not fg.isolated(model) else [])
     if S.task not in task_avail:
         S.task = "scattering"
     S.task = st.radio("Aufgabe", task_avail, index=task_avail.index(S.task), format_func=TASKS.get, horizontal=True, key="task_pick",
@@ -586,7 +753,10 @@ with t_run:
                "conical": "Konischer Löser, klassisch (eigener Aufbau, auch für ältere hpfem)",
                "inplane": "In-Ebenen-Löser (nur TM, φ = 0), gleichmäßiges Netz",
                "inplane_hp": "In-Ebenen-Löser (nur TM, φ = 0), hp-adaptiv"}
+    ENGINES["isolated"] = "Isolierte Struktur: konischer Löser mit PML auf allen Seiten (TE, TM, konisch)"
     avail = (["grating", "grating_hp"] if has_grating else []) + ["conical"] + (["inplane", "inplane_hp"] if inplane_ok else [])
+    if fg.isolated(model):
+        avail = ["isolated"]
     if S.task == "resonances":
         avail = ["grating"]
     if sv.get("engine") not in avail:
@@ -784,8 +954,9 @@ with t_run:
                     gib = est.get("total_bytes", 0) / 2 ** 30
                     dofs_txt = f"{est.get('dofs', 0):,}".replace(",", ".")
                     backend_txt = str(est.get("backend", "")).split(".")[-1]
+                    gib_txt = f"{gib:.2f}".replace(".", ",")
                     (st.warning if gib > 8 else st.info)(f"Speicherschätzung (p = {chk.get('order')}): {dofs_txt} Freiheitsgrade, "
-                                                         f"{gib:.2f}".replace(".", ",") + f" GiB für Matrix und Faktoren ({backend_txt})")
+                                                         f"{gib_txt} GiB für Matrix und Faktoren ({backend_txt})")
                 diags = chk.get("diagnostics")
                 if diags is None:
                     st.info(chk.get("note", "Keine Prüfungen verfügbar."))
@@ -840,7 +1011,10 @@ with t_res:
             st.success(f"Gespeichert unter {arch / name_arch}")
         meta = res["meta"]
         task = meta.get("task", "scattering")
-        df = fp.results_dataframe(res, mode) if task == "scattering" else fp.resonances_dataframe(res["points"])
+        if fg.isolated(rmodel):
+            df = fp.iso_dataframe(res["points"], mode)
+        else:
+            df = fp.results_dataframe(res, mode) if task == "scattering" else fp.resonances_dataframe(res["points"])
         errs = [p for p in res["points"] if "error" in p] + [p for p in res.get("pscan", []) if "error" in p]
         for p in errs:
             st.error(f"Punkt {p.get('index', p.get('order'))}: {p['error']}")
@@ -851,7 +1025,9 @@ with t_res:
                    f"{SWEEP_MODES.get(mode, mode)} · {'Start-' if meta.get('engine', '').endswith('_hp') else ''}p = {meta['order']} · "
                    f"{meta['cells']} Dreiecke (Startnetz) · {len([p for p in res['points'] if 'error' not in p])} von {len(res['points'])} Punkten · "
                    f"Start {meta['started']}" + (f" · hpfem {vi_['hpfem']}" if vi_.get("hpfem") else ""))
-    if res is not None and task == "resonances":
+    if res is not None and fg.isolated(rmodel):
+        iso_results(view, res, rmodel, mode)
+    elif res is not None and task == "resonances":
         sub = st.tabs(["Resonanzen", "Modenfelder", "Tabelle und Export"])
         ok_pts = [p for p in res["points"] if "error" not in p]
         with sub[0]:
@@ -905,63 +1081,9 @@ with t_res:
             else:
                 st.info("Keine auswertbaren Punkte.")
         with sub[1]:
-            maps = sorted(view.glob("maps_*.npz"), key=lambda p: int(p.stem.split("_")[1]))
-            if not maps:
-                st.info("Für diese Rechnung wurden keine Feldkarten gespeichert (Reiter 3: „Feldkarten speichern“).")
-            else:
-                c = st.columns(4)
-                which = c[0].selectbox("Punkt Nr.", [int(p.stem.split("_")[1]) for p in maps], key="map_which")
-                tri_file = view / f"tri_{which}.npz"
-                with np.load(view / f"maps_{which}.npz") as z_:
-                    has_ = {"H": "H" in z_.files, "S": "S" in z_.files}
-                qopts = [k for k in fp.QUANTITIES if (has_["H"] or not (fp.QUANTITIES[k][0] == "Habs" or fp.QUANTITIES[k][0][0] == "h"))
-                         and (has_["S"] or not (fp.QUANTITIES[k][0] == "Sabs" or fp.QUANTITIES[k][0][0] == "s"))]
-                qkey = c[1].selectbox("Größe", qopts, key="map_q",
-                                      help="H und der Poynting-Vektor S stehen zur Verfügung, wenn die Rechnung sie gespeichert hat (hpfem ab 0.4).")
-                periods = c[2].selectbox("Perioden", [1, 2, 3], key="map_periods")
-                cmap = c[3].selectbox("Farbskala", ["automatisch", "inferno", "viridis", "magma", "turbo", "RdBu_r", "coolwarm"], key="map_cm")
-                c = st.columns(4)
-                logs = c[0].checkbox("logarithmisch", key="map_log")
-                geo = c[1].checkbox("Geometrie einzeichnen", value=True, key="map_geo")
-                msh = c[2].checkbox("Netz einzeichnen", key="map_mesh")
-                vmax_txt = c[3].text_input("Obergrenze der Skala (leer = automatisch)", "", key="map_vmax")
-                pt = next(p for p in res["points"] if p.get("index") == which)
-                A_en = pt["A"] if pt.get("A") is not None else pt["A_incl_substrate"]
-                try:
-                    vmax = float(vmax_txt) if vmax_txt.strip() else None
-                except ValueError:
-                    vmax = None
-                rep = st.radio("Darstellung", ["Elemente (exakt)", "Raster"], horizontal=True, key="map_rep",
-                               help="Elemente: Feld auf den unterteilten Dreiecken des Netzes, Sprünge an Materialgrenzen scharf. Raster: reguläres Gitter.") \
-                    if tri_file.is_file() else "Raster"
-                if rep.startswith("Elemente"):
-                    tri = fp.load_tri(tri_file)
-                    show_fig(fp.fig_map_tri(tri, fp.derived_tri(tri, rmodel), rmodel, qkey, periods=periods, cmap=None if cmap == "automatisch" else cmap, vmax=vmax,
-                                            log=logs, show_geometry=geo), f"karte_{which}_elemente.png", "dl_map")
-                    if msh:
-                        st.caption("Das Netz lässt sich nur in der Rasterdarstellung einzeichnen.")
-                else:
-                    mp = fp.load_map(view / f"maps_{which}.npz")
-                    d = fp.derived(mp, rmodel, A_en)
-                    show_fig(fp.fig_map(mp, d, rmodel, qkey, periods=periods, cmap=None if cmap == "automatisch" else cmap, vmax=vmax, log=logs,
-                                        mesh_npz=(view / "mesh_plot.npz") if msh else None, show_geometry=geo), f"karte_{which}.png", "dl_map")
-                st.caption("Feld in den Achsen der Rechnung: x entlang der Periode, y vertikal, z entlang der Linien. Einfallende Welle mit Amplitude |E₀| = 1.")
+            maps_view(view, res, rmodel)
         with sub[2]:
-            maps = sorted(view.glob("maps_*.npz"), key=lambda p: int(p.stem.split("_")[1]))
-            if not maps:
-                st.info("Keine Feldkarten gespeichert.")
-            else:
-                c = st.columns(3)
-                which = c[0].selectbox("Punkt Nr.", [int(p.stem.split("_")[1]) for p in maps], key="cut_which")
-                axis = c[1].radio("Schnitt", ["vertikal (bei festem x)", "horizontal (bei festem y)"], key="cut_axis")
-                mp = fp.load_map(view / f"maps_{which}.npz")
-                d = fp.derived(mp, rmodel)
-                if axis.startswith("vertikal"):
-                    pos = c[2].slider("x (nm)", float(d["x"][0]), float(d["x"][-1]), float((d["x"][0] + d["x"][-1]) / 2), key="cut_x")
-                    show_fig(fp.fig_cut(d, rmodel, "y", pos), "schnitt_vertikal.png", "dl_cut")
-                else:
-                    pos = c[2].slider("y (nm)", float(d["y"][0]), float(d["y"][-1]), 0.0, key="cut_y")
-                    show_fig(fp.fig_cut(d, rmodel, "x", pos), "schnitt_horizontal.png", "dl_cut")
+            cuts_view(view, rmodel)
         with sub[3]:
             ok_pts = [p for p in res["points"] if "error" not in p]
             if not ok_pts:

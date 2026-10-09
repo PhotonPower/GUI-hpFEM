@@ -76,6 +76,34 @@ Die Residuen-Adaptivität des konischen Lösers erreicht also das Niveau der Ref
 (hp-FEM, validation.md E: ΔR₋₁ = −5·10⁻⁶ bei 88 k Freiheitsgraden).
 
 
+## Isolierte Strukturen (Reiter 1: „Seitliche Ränder: isoliert“)
+Statt einer periodischen Zelle eine **einzelne** Struktur (Draht, Graben, Schlitz, Stufe, Partikelquerschnitt) im Schichtstapel: links und rechts
+absorbieren PML-Schichten, die Schichten laufen hindurch, dahinter liegt eine Metallwand. Die „Periode“ heißt dann **Breite des Innengebiets**
+(Struktur plus Abstand); die Formen müssen darin liegen. Gerechnet wird mit dem konischen Löser (TE, TM, konischer Einfall) und dem Schichtstapel als
+analytischem Hintergrund (Streufeld-Formulierung, wie im Slit-Groove-Benchmark der Bibliothek).
+
+Ergebnisse (Reiter 4):
+* **Querschnitte je Länge** („Breiten“, nm): σ_sca aus dem Fluss des Streufelds durch die geschlossene Messbox (grün in der Vorschau) und der Anteil
+  nach oben; in **homogener Umgebung** (gleiches Material oben und unten, keine Schichten, PML unten) zusätzlich σ_abs und σ_ext (hpfem
+  `conical_cross_sections`) und das Fernfeld dσ/dφ. Für einen einzelnen Kreiszylinder bei φ = 0 die Mie-Reihe als Referenz.
+* **Detektoren** (Reiter 1, Rechengebiet: eine Zeile je Detektor „Name; y; x von; x bis“): Energiefluss des Gesamtfelds nach unten durch die
+  Strecke, absolut (W/m für |E₀| = 1 V/m) und normiert auf den einfallenden Fluss durch dieselbe Breite.
+* Feldkarten, Schnitte, Konvergenz in p wie im periodischen Modus.
+
+Mit Schichtstapel enthält die volumetrische Absorption den ebenen Stapel (über die ganze Breite) und ist kein Querschnitt; die App zeigt dann nur
+Streubreite, Anteil nach oben und die Detektoren.
+
+**Gemessen (9.10.2026):**
+
+| Vorlage | Ergebnis |
+|---|---|
+| Isolierter Zylinder n = 1,5, r = 200 nm, 500–1000 nm, TE und TM (p = 4, 3 Elemente/λ) | σ_sca und σ_ext gegen Mie auf 1·10⁻⁴ bis 9·10⁻⁴; eigene Streubreite gegen die der Bibliothek auf 1,4·10⁻⁴ |
+| Slit-Groove-Benchmark (Ag-Film mit Schlitz und Rille, TM, 852 nm, Substrat ε = 2,25; 3 Elemente/λ, 0,25 Elemente je Eindringtiefe) | S/S₀ = 2,20081 (p = 3, 250 k Freiheitsgrade), 2,19923 (p = 4, 433 k); Referenz 2,198826 (Burger et al. 2013): +9·10⁻⁴ bzw. +1,9·10⁻⁴ |
+
+Für den Slit-Groove-Benchmark beide Vorlagen rechnen („… S“ mit Rille und „… ohne Rille (Referenz S₀)“) und die Detektorwerte „P nach unten“
+teilen. In Reiter 2 „Elemente pro Eindringtiefe“ auf etwa 0,25 stellen (die hohe Ordnung p löst den Skin-Effekt auf; 1 Element je Eindringtiefe
+ergäbe über die 10 µm Filmbreite unnötig viele Dreiecke).
+
 ## Rotationskörper: Resonatoren und Emitter (Seitenleiste „Art des Modells“)
 Für Strukturen mit Rotationssymmetrie um die z-Achse rechnet die App jede Azimutordnung m als 2D-Problem in der Meridianebene (r ≥ 0, z). Ablauf wie
 im periodischen Modus in fünf Reitern:

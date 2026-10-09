@@ -40,6 +40,14 @@
 
 x entlang der Periode, y senkrecht zu den Schichten, z entlang der invarianten Richtung. Einheiten: nm im Modell, SI im Löser. Zeitabhängigkeit exp(−iωt), Verlust bedeutet Im ε > 0. Einfallende ebene Welle mit |E₀| = 1 V/m. Einzelheiten stehen im Reiter „Info“ der App.
 
+## Isolierte Strukturen
+
+`fem_geometry.isolated(model)` (domain["lateral"] = "pml"): das Netz reicht von −pml_side bis P + pml_side, die Formen werden nicht periodisch
+fortgesetzt, die Messbox (Netzlinien) umschließt die Formen; die Ränder 1–4 sind dann Metallwände hinter der PML. Der Worker (`IsolatedRun`) setzt
+`ConicalScattering` mit `PmlBox2D` auf allen vier Seiten und ohne Bloch-Paare auf; `iso_result` misst den Streufluss (E_sca aus `sample(scattered=True)`,
+H_sca = H − `incident_h_field`), in homogener Umgebung `conical_cross_sections` und `ConicalFarField`, die Mie-Reihe des Zylinders und die Detektorflüsse
+(`sample(quantity="S")`, Gauß-Regel).
+
 ## Kompatibilität mit hp-FEM
 
 Das Gmsh-Netz trägt die Ränder als `hpfem.box_tag` (1 links, 2 rechts, 3 unten, 4 oben), damit `hpfem.grating` es direkt nimmt; die Materialflächen sind 1 bis N.

@@ -3,7 +3,10 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import copy  # noqa: E402
+
 import numpy as np  # noqa: E402
+import pytest  # noqa: E402
 
 import fem_geometry as fg  # noqa: E402
 import fem_post as fp  # noqa: E402
@@ -106,3 +109,52 @@ def test_jacobian_resonance_balance_tables_and_figures():
     assert len(rdf) == 6 and (rdf["Q"] < 0).sum() == 3
     plt.close(fp.fig_resonances(res, "theta"))
     plt.close(fp.fig_resonances(res[:1], "none"))
+
+
+def test_isolated_layout_validation_and_presets():
+    import fem_geometry as fg_
+    P = fg_.presets()
+    cyl = P[next(k for k in P if k.startswith("Isolierter Zylinder"))]
+    sg = P[next(k for k in P if k.startswith("Slit-Groove-Benchmark (Ag"))]
+    for m in (cyl, sg):
+        assert fg_.isolated(m)
+        assert not [t for lvl, t in fg_.validate(m, m["incidence"]["wavelength_nm"]) if lvl == "error"]
+        lay = fg_.layout(m)
+        b = lay["box"]
+        assert lay["x_min"] < 0 < b["x0"] < b["x1"] < m["period_nm"] < lay["x_max"]
+        assert lay["y_sub_bottom"] < b["y0"] < b["y1"] < lay["y_cover_top"]
+    bad = copy.deepcopy(cyl)
+    bad["shapes"][0]["x_center"] = 50.0                                     # reaches out of the inner region
+    assert any("Innengebiet" in t for lvl, t in fg_.validate(bad, 700.0) if lvl == "error")
+    bad = copy.deepcopy(sg)
+    bad["detectors"][0]["x1_nm"] = 1e6
+    assert any("Detektor" in t for lvl, t in fg_.validate(bad, 852.0) if lvl == "error")
+    per = fg_.default_model()
+    assert not fg_.isolated(per) and "box" not in fg_.layout(per)
+
+
+def test_gauss_line_and_mie_cylinder():
+    x, w = fw._gauss_line(0.0, 2.0, 40)
+    assert abs(np.sum(w * x ** 3) - 4.0) < 1e-12
+    scipy = pytest.importorskip("scipy")  # noqa: F841
+    lam, a, n = 1000.0, 8.0, 1.5                                            # Rayleigh limit, E along the axis: Q_sca = pi^2 x^3 (m^2 - 1)^2 / 8
+    r = fw.mie_cylinder(lam, a, n, 1.0, "TE")
+    x_ = 2 * np.pi * a / lam
+    q = np.pi ** 2 * x_ ** 3 * (n ** 2 - 1) ** 2 / 8
+    assert r["sigma_sca"] / (2 * a * 1e-9) == pytest.approx(q, rel=0.02)
+    assert abs(r["sigma_abs"]) < 1e-9 * r["sigma_sca"] + 1e-30
+    lossy = fw.mie_cylinder(500.0, 50.0, complex(0.2, 3.0), 1.0, "TM")
+    assert lossy["sigma_abs"] > 0
+
+
+def test_iso_figures():
+    import matplotlib.pyplot as plt
+    pts = [dict(index=i, value=500.0 + 100 * i, lam_nm=500.0 + 100 * i, theta=0.0, phi=0.0, sigma_sca=1e-6, sigma_sca_up=1e-8, sigma_abs=0.0,
+                sigma_ext=1e-6, mie=dict(sigma_sca=1e-6, sigma_abs=0.0, sigma_ext=1e-6), dofs=10, time_s=1.0,
+                detectors=[dict(name="S", y_nm=-1.0, x0_nm=0.0, x1_nm=1.0, P_down=1e-11, normalised=0.07)],
+                farfield_phi=np.linspace(0, 2 * np.pi, 13).tolist(), farfield_dsigma=np.ones(13).tolist()) for i in range(3)]
+    plt.close(fp.fig_widths(pts, "wavelength", 400.0))
+    plt.close(fp.fig_detectors(pts, "wavelength"))
+    plt.close(fp.fig_farfield_iso(pts[0]))
+    df = fp.iso_dataframe(pts, "wavelength")
+    assert "σ_sca (nm)" in df.columns and "S: normiert" in df.columns

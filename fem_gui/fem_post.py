@@ -125,8 +125,10 @@ def fig_pscan(ps):
         return fig
     dofs = np.array([p["dofs"] for p in ok], float)
     order = [p["order"] for p in ok]
-    for key, lab in (("R", "R"), ("T", "T"), ("A", "A")):
+    for key, lab in (("R", "R"), ("T", "T"), ("A", "A"), ("sigma_sca", "σ_sca"), ("sigma_ext", "σ_ext")):
         v = np.array([np.nan if p.get(key) is None else p[key] for p in ok], float)
+        if key.startswith("sigma") and np.isfinite(v).all():
+            v = v / np.abs(v).max()                                     # widths relative to the largest (the deviation plot is relative)
         if np.isfinite(v).all():
             axs[0].plot(order, v, "o-", label=lab)
             d = np.abs(v - v[-1])[:-1]
@@ -736,3 +738,92 @@ def balance_dataframe(points):
             row["Flussbilanz: relativer Rest"] = fb.get("relative_residual")
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+# ------------------------------------------------------------------------------------------------------- isolated structures
+def iso_dataframe(points, mode):
+    """Table of an isolated structure: widths (scattering, absorption, extinction; Mie where given) and detector fluxes."""
+    rows = []
+    for p in points:
+        if "error" in p:
+            rows.append({"Nr": p.get("index"), SWEEP_LABEL.get(mode, "Wert"): p.get("value"), "Fehler": p["error"]})
+            continue
+        row = {"Nr": p["index"], "λ (nm)": p["lam_nm"], "θ (°)": p["theta"], "φ (°)": p["phi"]}
+        for key, lab in (("sigma_sca", "σ_sca (nm)"), ("sigma_sca_up", "σ_sca nach oben (nm)"), ("sigma_abs", "σ_abs (nm)"), ("sigma_ext", "σ_ext (nm)")):
+            if p.get(key) is not None:
+                row[lab] = p[key] * 1e9
+        if p.get("mie"):
+            for key, lab in (("sigma_sca", "Mie σ_sca (nm)"), ("sigma_ext", "Mie σ_ext (nm)")):
+                row[lab] = p["mie"][key] * 1e9
+        for d in p.get("detectors", []):
+            if d.get("P_down") is not None:
+                row[f"{d['name']}: P nach unten (W/m)"] = d["P_down"]
+                row[f"{d['name']}: normiert"] = d["normalised"]
+        row["Freiheitsgrade"], row["Zeit (s)"] = p["dofs"], p["time_s"]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def fig_widths(points, mode, width_nm=None):
+    """Scattering, absorption and extinction widths per unit length over the sweep (or bars for a single point), with the Mie series."""
+    import matplotlib.pyplot as plt
+
+    ok = [p for p in points if "error" not in p and p.get("sigma_sca") is not None]
+    fig, ax = plt.subplots(figsize=(8, 4.4))
+    if not ok:
+        ax.text(0.5, 0.5, "keine Querschnitte (Messbox fehlt?)", ha="center")
+        ax.axis("off")
+        return fig
+    x = [p["value"] if mode != "none" else p["lam_nm"] for p in ok]
+    single = len(ok) == 1
+    for key, lab, col, mk in (("sigma_ext", "Extinktion", "C0", "o-"), ("sigma_sca", "Streuung", "C1", "s-"), ("sigma_abs", "Absorption", "C3", "^-"),
+                              ("sigma_sca_up", "Streuung in den oberen Halbraum (Messbox oben)", "C2", "v--")):
+        vals = [p.get(key) for p in ok]
+        if all(v is not None for v in vals):
+            ax.plot(x, [v * 1e9 for v in vals], mk if not single else "o", ms=5, color=col, label=lab)
+        if key in ("sigma_ext", "sigma_sca", "sigma_abs") and all(p.get("mie") for p in ok):
+            ax.plot(x, [p["mie"][key] * 1e9 for p in ok], "--" if not single else "x", color=col, lw=1.0, ms=9, alpha=0.8, label=f"{lab} (Mie)")
+    ax.set_xlabel(SWEEP_LABEL.get(mode, "Wellenlänge (nm)") if mode != "none" else "Wellenlänge (nm)")
+    ax.set_ylabel("Querschnitt je Länge (nm)")
+    if width_nm:
+        sec = ax.secondary_yaxis("right", functions=(lambda v: v / width_nm, lambda q: q * width_nm))
+        sec.set_ylabel("Effizienz σ / Breite der Struktur")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def fig_detectors(points, mode):
+    """Energy flow of the total field through the detectors (normalised to the incident flow through the same width)."""
+    import matplotlib.pyplot as plt
+
+    ok = [p for p in points if "error" not in p and p.get("detectors")]
+    fig, ax = plt.subplots(figsize=(8, 3.8))
+    if not ok:
+        ax.text(0.5, 0.5, "keine Detektoren", ha="center")
+        ax.axis("off")
+        return fig
+    names = [d["name"] for d in ok[0]["detectors"]]
+    x = [p["value"] if mode != "none" else p["lam_nm"] for p in ok]
+    for k, n in enumerate(names):
+        vals = [p["detectors"][k]["normalised"] for p in ok]
+        ax.plot(x, vals, "o-" if len(ok) > 1 else "o", label=n)
+    ax.set_xlabel(SWEEP_LABEL.get(mode, "Wellenlänge (nm)") if mode != "none" else "Wellenlänge (nm)")
+    ax.set_ylabel("P nach unten / einfallend durch dieselbe Breite")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def fig_farfield_iso(pt):
+    """d sigma / d phi (nm per rad) of an isolated structure in a homogeneous background, polar (phi from +x, counter-clockwise; light from +y)."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw={"projection": "polar"})
+    phi = np.asarray(pt["farfield_phi"])
+    ax.plot(phi, np.asarray(pt["farfield_dsigma"]) * 1e9, color="C0")
+    ax.set_title(f"dσ/dφ (nm/rad) bei λ = {pt['lam_nm']:.1f} nm; 90° = +y (Einfallsseite)", fontsize=9)
+    fig.tight_layout()
+    return fig
