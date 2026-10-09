@@ -6,7 +6,9 @@ preview, the Gmsh meridian mesh and the figures. The solver side is fem_axi_work
 
 Model (JSON dict, lengths in nm):
     kind = "axi", name, materials (as in fem_materials), background (surrounding lossless medium), substrate (material of the half-space
-    z < 0 or None), parts (drawn in order, a later part covers earlier ones and the substrate):
+    z < 0 or None), layers (planar layers {material, z_bottom, height} that run radially through the PML to the outer wall, like the
+    substrate: Bragg mirrors, membranes, slab waveguides; a later layer covers earlier ones and the substrate), parts (drawn in order, a later
+    part covers earlier ones, the layers and the substrate):
         cylinder   r_inner, radius, z_bottom, height            (disc, pillar layer, ring with r_inner > 0)
         cone       r_bottom, r_top, z_bottom, height             (frustum on the axis)
         sphere     z_center, radius                              (on the axis)
@@ -74,7 +76,7 @@ def default_model():
     return {
         "kind": "axi", "name": "Neuer Rotationskörper",
         "materials": {"Luft": {"type": "library", "name": "air"}, "Glas": _idx(1.5)},
-        "background": "Luft", "substrate": None,
+        "background": "Luft", "substrate": None, "layers": [],
         "parts": [dict(type="sphere", material="Glas", z_center=0.0, radius=500.0)],
         "domain": {"margin_nm": 600.0, "pml_nm": 1000.0},
         "resonance": {"wavelength_nm": 900.0, "m": 1, "num_modes": 6},
@@ -167,6 +169,29 @@ def presets():
                     "sweep": {"mode": "fixed", "start": 450.0, "stop": 800.0, "n": 15, "linewidths": 1.5}, "modal": False},
         "scattering": dict(default_scattering(450.0, 800.0, 36), theta_deg=45.0, pol="P", max_order=8),
     }
+    P["GaAs-Membran 200 nm mit Quantenpunkt (Schicht bis in die PML, Sommerfeld-Test)"] = {
+        "kind": "axi", "name": "GaAs-Membran 200 nm in Luft, Emitter in der Mitte",
+        "materials": {"Luft": {"type": "library", "name": "air"}, "GaAs": _idx(3.53)},
+        "background": "Luft", "substrate": None, "layers": [dict(material="GaAs", z_bottom=0.0, height=200.0)],
+        "parts": [],
+        "domain": {"margin_nm": 0.75 * lam, "pml_nm": 1.5 * lam},
+        "resonance": {"wavelength_nm": lam, "m": 1, "num_modes": 4},
+        "emitter": {"z_nm": 100.0, "orientation": "transverse", "sigma_nm": 10.0,
+                    "sweep": {"mode": "fixed", "start": 900.0, "stop": 1000.0, "n": 5, "linewidths": 1.5}, "modal": False},
+    }
+    parts, centre, height = dbr_pillar(6, 0, 750.0, lam)
+    mirror, _, _ = dbr_pillar(0, 10, 1.0, lam)                            # 10 pairs and a cavity layer; the pairs become planar layers
+    lay_mirror = [dict(material=q["material"], z_bottom=q["z_bottom"], height=q["height"]) for q in mirror[:-1]]
+    pillar = [dict(q, z_bottom=round(q["z_bottom"] + mirror[-1]["z_bottom"], 4)) for q in parts]
+    P["Mikrosäule auf planarem unterem Spiegel (Schichten bis in die PML)"] = {
+        "kind": "axi", "name": "Säule (Kavität + 6 Paare) auf planarem DBR (10 Paare)",
+        "materials": {"Luft": {"type": "library", "name": "air"}, "GaAs": _idx(3.53), "AlAs": _idx(2.95)},
+        "background": "Luft", "substrate": "GaAs", "layers": lay_mirror, "parts": pillar,
+        "domain": {"margin_nm": 0.75 * lam, "pml_nm": 1.5 * lam},
+        "resonance": {"wavelength_nm": lam, "m": 1, "num_modes": 4},
+        "emitter": {"z_nm": round(centre + mirror[-1]["z_bottom"], 4), "orientation": "transverse", "sigma_nm": 20.0,
+                    "sweep": {"mode": "resonance", "start": 920.0, "stop": 940.0, "n": 9, "linewidths": 1.5}, "modal": False},
+    }
     P["Mikroscheibe n = 2 auf Glas (Flüstergalerie-Moden, m = 12)"] = {
         "kind": "axi", "name": "Mikroscheibe r = 1,5 µm, 250 nm dick",
         "materials": {"Luft": {"type": "library", "name": "air"}, "Scheibe": _idx(2.0), "Glas": _idx(1.45)},
@@ -190,6 +215,7 @@ def complete(m):
     for k, v in base.items():
         m.setdefault(k, copy.deepcopy(v))
     m["emitter"].setdefault("modal", False)
+    m.setdefault("layers", [])
     return m
 
 
@@ -248,9 +274,20 @@ def materials_at(model, r, z):
     """Material names at the points (r, z) [nm] (arrays): the last part containing a point, else the substrate (z < 0), else the background."""
     r, z = np.atleast_1d(np.asarray(r, float)), np.atleast_1d(np.asarray(z, float))
     out = np.where((z < 0) & bool(model.get("substrate")), model.get("substrate") or "", model["background"]).astype(object)
+    for ly in model.get("layers", []):
+        out[(z >= ly["z_bottom"]) & (z < ly["z_bottom"] + ly["height"])] = ly["material"]
     for p in model["parts"]:
         out[_inside(part_polygon(p, 192), r, z)] = p["material"]
     return out
+
+
+def base_material(model, z):
+    """Material of the planar background at height z (substrate, layers, surrounding medium) without the parts."""
+    m = model["substrate"] if (model.get("substrate") and z < 0) else model["background"]
+    for ly in model.get("layers", []):
+        if ly["z_bottom"] <= z < ly["z_bottom"] + ly["height"]:
+            m = ly["material"]
+    return m
 
 
 def material_at(model, r, z):
@@ -262,13 +299,13 @@ def layout(model):
     """Vertical and radial layout in nm: structure extent, the inner box (PML starts outside it), the outer domain, the collection planes."""
     d = model["domain"]
     margin, pml = float(d["margin_nm"]), float(d["pml_nm"])
-    if model["parts"]:
-        boxes = np.array([part_bbox(p) for p in model["parts"]])
-        r_max, z_lo_s, z_hi_s = float(boxes[:, 1].max()), float(boxes[:, 2].min()), float(boxes[:, 3].max())
-    else:
-        r_max, z_lo_s, z_hi_s = 0.0, 0.0, 0.0
+    zs_ = [(b[2], b[3]) for b in (part_bbox(p) for p in model["parts"])]
+    zs_ += [(float(ly["z_bottom"]), float(ly["z_bottom"]) + float(ly["height"])) for ly in model.get("layers", [])]
     if model.get("substrate"):
-        z_lo_s = min(z_lo_s, 0.0)
+        zs_.append((0.0, 0.0))
+    r_max = max([part_bbox(p)[1] for p in model["parts"]], default=0.0)
+    z_lo_s = min([a for a, _ in zs_], default=0.0)
+    z_hi_s = max([b for _, b in zs_], default=0.0)
     em = model.get("emitter", {})
     if em.get("z_nm") is not None:
         z_lo_s, z_hi_s = min(z_lo_s, float(em["z_nm"])), max(z_hi_s, float(em["z_nm"]))
@@ -320,8 +357,15 @@ def validate(model, task="resonance"):
             out.append(("error", "Das Umgebungsmaterial muss verlustfrei sein (PML und Abstrahlung)."))
     except Exception as exc:
         out.append(("error", f"Umgebungsmaterial: {exc}"))
-    if not model["parts"]:
+    if not model["parts"] and not model.get("layers"):
         out.append(("warning", "Keine Struktur: nur Umgebung (und Substrat)."))
+    for i, ly in enumerate(model.get("layers", [])):
+        if ly["material"] not in names:
+            out.append(("error", f"Schicht {i + 1}: Material „{ly['material']}“ fehlt."))
+        if ly["height"] <= 0:
+            out.append(("error", f"Schicht {i + 1}: Dicke > 0 nötig."))
+        if model.get("substrate") and ly["z_bottom"] < -1e-9:
+            out.append(("warning", f"Schicht {i + 1} reicht unter z = 0 ins Substrat und ersetzt es dort."))
     for i, p in enumerate(model["parts"]):
         if p["material"] not in names:
             out.append(("error", f"Teil {i + 1}: Material „{p['material']}“ fehlt."))
@@ -353,9 +397,10 @@ def validate(model, task="resonance"):
         out.append(("error", "Die Azimutordnung m muss ≥ 0 sein (−m hat dieselben Moden)."))
     if task == "scattering":
         sc = model.get("scattering") or {}
-        if model.get("substrate"):
-            out.append(("error", "Streuung ebener Wellen geht nur in homogener Umgebung: das Substrat entfernen (die einfallende Welle muss eine "
-                                 "Lösung im Umgebungsmedium sein; Partikel auf Substraten folgen mit einem geschichteten Hintergrund)."))
+        if model.get("substrate") or model.get("layers"):
+            out.append(("error", "Streuung ebener Wellen geht nur in homogener Umgebung: Substrat und radial unendliche Schichten entfernen (die "
+                                 "einfallende Welle muss eine Lösung im Umgebungsmedium sein; geschichtete Hintergründe bietet der zylindersymmetrische "
+                                 "Löser nicht)."))
         if not 0.0 <= float(sc.get("theta_deg", 0.0)) <= 180.0:
             out.append(("error", "Einfallswinkel zwischen 0° und 180° (gegen die +z-Achse)."))
         if int(sc.get("max_order", 8)) < 1:
@@ -398,6 +443,8 @@ def preview_figure(model, figsize=(7.2, 6.0), show_domain=True):
     ax.add_patch(Rectangle((-R, z0), 2 * R, z1 - z0, color=fg.material_color(model, model["background"]), alpha=0.35, lw=0))
     if model.get("substrate"):
         ax.add_patch(Rectangle((-R, z0), 2 * R, -z0, color=fg.material_color(model, model["substrate"]), alpha=0.9, lw=0))
+    for ly in model.get("layers", []):
+        ax.add_patch(Rectangle((-R, ly["z_bottom"]), 2 * R, ly["height"], facecolor=fg.material_color(model, ly["material"]), edgecolor="0.3", lw=0.3))
     for p in model["parts"]:
         q = part_polygon(p)
         col = fg.material_color(model, p["material"])
@@ -673,6 +720,9 @@ def fig_axi_field(d, model, key, log=False, cmap=None, mirror=True, zoom=None, f
             ax.plot(np.append(s * q[:, 0], s * q[0, 0]), np.append(q[:, 1], q[0, 1]), color="w", lw=0.6, alpha=0.8)
     if model.get("substrate"):
         ax.axhline(0.0, color="w", lw=0.6, ls="--", alpha=0.8)
+    for ly in model.get("layers", []):
+        for zz in (ly["z_bottom"], ly["z_bottom"] + ly["height"]):
+            ax.axhline(zz, color="w", lw=0.4, ls=":", alpha=0.7)
     ax.axvline(0, color="w", lw=0.5, ls="-.", alpha=0.6)
     ax.set_aspect("equal")
     if zoom:
@@ -738,16 +788,19 @@ def build_mesh(model, ms, out_dir, task="resonance"):
         gmsh.model.add("meridian")
         occ = gmsh.model.occ
         rs = [0.0, lay["r_in"], lay["r_out"]]
-        zs = sorted({lay["z_bot"], lay["z_lo"], lay["z_hi"], lay["z_top"]} | ({0.0} if model.get("substrate") and lay["z_lo"] < 0 < lay["z_hi"] else set()))
+        zset = {lay["z_bot"], lay["z_lo"], lay["z_hi"], lay["z_top"]}
         if model.get("substrate"):
-            zs = sorted(set(zs) | {0.0})
-        base = []                                                    # (tag, material)
+            zset |= {0.0}
+        for ly in model.get("layers", []):
+            zset |= {float(ly["z_bottom"]), float(ly["z_bottom"]) + float(ly["height"])}
+        zs = sorted(z_ for z_ in zset if lay["z_bot"] <= z_ <= lay["z_top"])
+        base = []                                                    # (tag, material, kind): planar slabs, radially through the PML
         for i in range(len(rs) - 1):
             for j in range(len(zs) - 1):
                 tag = occ.addRectangle(rs[i], zs[j], 0, rs[i + 1] - rs[i], zs[j + 1] - zs[j])
                 zc = 0.5 * (zs[j] + zs[j + 1])
-                mat = model["substrate"] if (model.get("substrate") and zc < 0) else model["background"]
-                kind = "pml" if (i == 1 or j == 0 or j == len(zs) - 2) else "inner"
+                mat = base_material(model, zc)
+                kind = "pml" if (i == 1 or zs[j + 1] <= lay["z_lo"] + 1e-9 or zs[j] >= lay["z_hi"] - 1e-9) else "inner"
                 base.append((tag, mat, kind))
         domain_box = occ.addRectangle(0, lay["z_bot"], 0, lay["r_out"], lay["z_top"] - lay["z_bot"])
         tools = []                                                   # (dimtag, role, part index)

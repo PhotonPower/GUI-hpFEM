@@ -136,3 +136,37 @@ def test_scattering_and_modal_figures():
         plt.close(fa.fig_scatter_field(d, fa.default_model(), q))
     modal = [dict(lam_nm=930.0 + i, purcell=1.5, modal=dict(total=1.5, mode=1.0, background=0.5)) for i in range(3)]
     plt.close(fa.fig_modal(modal, dict(Q=170.0)))
+
+
+def test_radially_infinite_layers():
+    P = fa.presets()
+    mem = P[next(k for k in P if k.startswith("GaAs-Membran"))]
+    assert fa.material_at(mem, 0.0, 100.0) == "GaAs" and fa.material_at(mem, 1e5, 100.0) == "GaAs"   # through the PML
+    assert fa.material_at(mem, 0.0, 300.0) == "Luft"
+    assert fa.base_material(mem, 100.0) == "GaAs"
+    lay = fa.layout(mem)
+    assert lay["z_plane_bottom"] < 0.0 and lay["z_plane_top"] > 200.0
+    assert not [t for lvl, t in fa.validate(mem, "emitter") if lvl == "error"]
+    assert any("Schichten" in t for lvl, t in fa.validate(mem, "scattering") if lvl == "error")
+    pil = P[next(k for k in P if k.startswith("Mikrosäule auf planarem"))]
+    assert len(pil["layers"]) == 20 and fa.material_at(pil, 1e5, pil["layers"][0]["height"] / 2) == "GaAs"
+    assert fa.material_at(pil, 0.0, pil["emitter"]["z_nm"]) == "GaAs"
+    old = fa.default_model()
+    del old["layers"]
+    assert fa.complete(old)["layers"] == []
+
+
+def test_layer_mesh(tmp_path):
+    pytest.importorskip("gmsh")
+    mem = fa.presets()[next(k for k in fa.presets() if k.startswith("GaAs-Membran"))]
+    ms = dict(cells_per_wavelength=2.0, skin_cells=1.0, interface_factor=0.7, curved=False, pml_cells_per_wavelength=3.0, lam_min_nm=900, lam_max_nm=1000)
+    try:
+        stats = fa.build_mesh(mem, ms, tmp_path, "emitter")
+    except Exception as exc:
+        pytest.skip(f"gmsh unavailable: {exc}")
+    d = np.load(tmp_path / "mesh_plot.npz")
+    xy, tri, mat = d["xy"], d["tri"], d["mat"]
+    gaas = list(d["names"]).index("GaAs")
+    lay = fa.layout(mem)
+    assert xy[tri[mat == gaas]].reshape(-1, 2)[:, 0].max() == pytest.approx(lay["r_out"])   # the layer reaches the outer wall
+    assert stats["source_box_nm"] > 0

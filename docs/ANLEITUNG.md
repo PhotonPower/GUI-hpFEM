@@ -135,6 +135,23 @@ Resonanz und Q konvergieren schnell, der Purcell-Faktor langsamer: **für genaue
 p = 3 auf 1 % am feinsten Vergleichswert). Der Wert 2,33 der README von hp-FEM gehört zur groben Schnelleinstellung und ist nicht konvergiert.
 Mit Modenzerlegung (p = 2, 7 Wellenlängen): Summe der Moden 1,98 gegen 2,05 direkt an der Resonanz, Anteil der Grundmode 1,06, Hintergrund 0,92.
 
+**Schichten (radial unendlich).** Planare Schichten (Material, Unterkante z, Dicke) laufen wie das Substrat über den ganzen Radius durch die PML
+bis zur Wand: planare Bragg-Spiegel unter einer Säule, Membranen, Schichtwellenleiter. In ihnen geführte Leistung wird in der PML absorbiert und
+zählt beim Emitter zum seitlichen Anteil. Der DBR-Generator kann den unteren Spiegel als solche Schichten anlegen („nur die Kavität und der obere
+Spiegel sind geätzt“). Nicht für die Streuung ebener Wellen (geschichteter Hintergrund fehlt im zylindersymmetrischen Löser).
+
+**Gemessen (10.10.2026), GaAs-Membran 200 nm in Luft, Emitter in der Mitte, 950 nm, p = 3,** gegen die exakte Sommerfeld-Lösung des planaren
+Stapels (eigene Referenz, selbst geprüft am Spiegeldipol und an zwei perfekten Platten):
+
+| Dipol | Sommerfeld | FEM, Normierung analytisch | FEM, Normierung numerisch |
+|---|---|---|---|
+| in der Membranebene (m = ±1), σ = 10 nm | 0,71513 | 0,71108 (−5,7·10⁻³) | 0,71412 (−1,4·10⁻³) |
+| entlang der Achse (m = 0), σ = 10 nm | 1,09394 | 1,09257 (−1,3·10⁻³) | 1,09350 (−4,0·10⁻⁴) |
+
+Unabhängig von PML-Dicke (1,5 λ / 3 λ) und Abstand (0,75 λ / 1,5 λ) bis auf 5 Stellen: die PML absorbiert die geführten Moden der Membran sauber.
+Die verbleibende Abweichung kommt von der schmalen Gauß-Quelle; die Option **„Purcell-Normierung numerisch auf demselben Netz“** (Reiter 3) rechnet
+P_bulk mit derselben Quelle im homogenen Emittermaterial und kürzt diesen Fehler heraus (doppelte Rechenzeit).
+
 **Streuung an Partikeln** (Aufgabe „Streuung“): ebene Welle aus der Umgebung unter dem Winkel θ gegen +z (Richtung (sin θ, 0, cos θ)), S
 (E entlang y) oder P (E in der Einfallsebene), Wellenlängenbereich und höchste Azimutordnung |m| (Faustregel k·R + 4; die Summe stoppt früher,
 wenn ±m weniger als 10⁻⁵ der Streuleistung trägt). Ergebnisse: σ_sca, σ_abs, σ_ext über λ (rechts als Effizienz σ/πR²), für eine einzelne Kugel

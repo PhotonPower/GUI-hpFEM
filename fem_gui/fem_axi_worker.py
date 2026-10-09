@@ -230,8 +230,20 @@ def emitter_point(job, lam_nm, surfaces, em, want_field=False):
     top = flux(surfaces["top"]) if surfaces.get("top") is not None and len(surfaces["top"]) else 0.0
     bottom = flux(surfaces["bottom"]) if surfaces.get("bottom") is not None and len(surfaces["bottom"]) else 0.0
     n_em = float(np.sqrt(eps[surfaces["emitter_material"]] + 0j).real)
-    bulk = n_em * float(h.dipole_vacuum_power(1.0, omega)) * np.exp(-((n_em * k0 * sigma) ** 2))
-    res = dict(lam_nm=lam_nm, P_total=total, P_top=top, P_bottom=bottom, P_bulk=bulk, purcell=total / bulk,
+    bulk_analytic = n_em * float(h.dipole_vacuum_power(1.0, omega)) * np.exp(-((n_em * k0 * sigma) ** 2))
+    bulk = bulk_analytic
+    if job.solver.get("bulk_fem"):
+        # the same current on the same mesh with every cell in the emitter's material: the discretisation of the narrow source cancels in the
+        # ratio (as examples/quantum_dot_purcell of hp-FEM does)
+        e_em = complex(eps[surfaces["emitter_material"]])
+        hom = h.MaterialMap(h.Material(e_em))
+        for t in job.tags:
+            hom.set(int(t), h.Material(e_em))
+        setup.materials = hom
+        f_bulk = h.AxisymmetricScattering(job.nd, job.h1, setup).solve()
+        bulk = factor * float(h.axisymmetric_poynting_flux(job.nd, job.h1, f_bulk.meridian, f_bulk.azimuthal, m, omega, hom, surfaces["around"]))
+        t_solve = time.time() - t0
+    res = dict(lam_nm=lam_nm, P_total=total, P_top=top, P_bottom=bottom, P_bulk=bulk, P_bulk_analytic=bulk_analytic, purcell=total / bulk,
                purcell_radiative=(top + bottom) / bulk, beta_top=top / total if total else None, beta_bottom=bottom / total if total else None,
                n_emitter=n_em, dofs=job.dofs, time_s=t_solve)
     fld = export_field(job, field.meridian, field.azimuthal, job.job.get("subdivisions", 2)) if want_field else None

@@ -45,7 +45,7 @@ def set_model(m):
 
 def used(model):
     u = {model["background"]} | ({model["substrate"]} if model.get("substrate") else set())
-    return u | {p["material"] for p in model["parts"]}
+    return u | {p["material"] for p in model["parts"]} | {ly["material"] for ly in model.get("layers", [])}
 
 
 def rename(model, old, new):
@@ -53,7 +53,7 @@ def rename(model, old, new):
     for key in ("background", "substrate"):
         if model.get(key) == old:
             model[key] = new
-    for p in model["parts"]:
+    for p in model["parts"] + model.get("layers", []):
         if p["material"] == old:
             p["material"] = new
 
@@ -69,7 +69,7 @@ def mesh_task(model):
 
 
 def signature(model, ms):
-    keep = {k: model[k] for k in ("materials", "background", "substrate", "parts", "domain")}
+    keep = {k: model.get(k) for k in ("materials", "background", "substrate", "layers", "parts", "domain")}
     keep["emitter"] = {k: model["emitter"][k] for k in ("z_nm", "sigma_nm")}
     keep["scattering"] = model["scattering"]["sweep"]
     return json.dumps([keep, ms, mesh_range(model)], sort_keys=True, default=str)
@@ -113,6 +113,27 @@ def _delete(i):
 
 def _duplicate(i):
     S.ax_model["parts"].insert(i + 1, copy.deepcopy(S.ax_model["parts"][i]))
+    bump()
+
+
+def _layer_delete(i):
+    del S.ax_model["layers"][i]
+    bump()
+
+
+def _layer_move(i, d):
+    ls = S.ax_model["layers"]
+    j = i + d
+    if 0 <= j < len(ls):
+        ls[i], ls[j] = ls[j], ls[i]
+        bump()
+
+
+def _layer_add():
+    m = S.ax_model
+    names = list(m["materials"])
+    top = max([ly["z_bottom"] + ly["height"] for ly in m["layers"]], default=0.0)
+    m["layers"].append(dict(material=next((n for n in names if n != m["background"]), names[0]), z_bottom=float(top), height=100.0))
     bump()
 
 
@@ -166,6 +187,21 @@ def tab_model(model, ver):
                               help="Füllt z < 0 über den ganzen Radius bis in die PML (z. B. der GaAs-Wafer unter einer Mikrosäule).")
         model["substrate"] = None if pick.startswith("–") else pick
 
+        st.subheader("Schichten (radial unendlich, bis in die PML)")
+        st.caption("Planare Schichten wie das Substrat: sie laufen über den ganzen Radius durch die PML bis zur Wand (Bragg-Spiegel, Membranen, "
+                   "Schichtwellenleiter). In ihnen geführte Leistung wird in der PML absorbiert und zählt beim Emitter zum seitlichen Anteil. Eine spätere "
+                   "Schicht überdeckt frühere und das Substrat; die Teile liegen darüber. Nicht für die Streuung ebener Wellen.")
+        for i, ly in enumerate(model["layers"]):
+            c = st.columns([3, 2, 2, 1, 1, 1])
+            ly["material"] = c[0].selectbox(f"Schicht {i + 1}", names, index=names.index(ly["material"]) if ly["material"] in names else 0,
+                                            key=f"ax_ly_m_{i}_{ver}")
+            ly["z_bottom"] = float(c[1].number_input("Unterkante z (nm)", value=float(ly["z_bottom"]), step=10.0, format="%.6g", key=f"ax_ly_z_{i}_{ver}"))
+            ly["height"] = float(c[2].number_input("Dicke (nm)", value=float(ly["height"]), min_value=0.1, step=10.0, format="%.6g", key=f"ax_ly_h_{i}_{ver}"))
+            c[3].button("↑", key=f"ax_ly_up_{i}_{ver}", on_click=_layer_move, args=(i, -1), help="früher (wird überdeckt)")
+            c[4].button("↓", key=f"ax_ly_dn_{i}_{ver}", on_click=_layer_move, args=(i, 1), help="später (überdeckt)")
+            c[5].button("✕", key=f"ax_ly_del_{i}_{ver}", on_click=_layer_delete, args=(i,), help="Schicht entfernen")
+        st.button("Schicht hinzufügen", key=f"ax_ly_add_{ver}", on_click=_layer_add)
+
         st.subheader("Struktur (Teile im Querschnitt r ≥ 0, z)")
         st.caption("Ein späteres Teil überdeckt frühere und das Substrat. Alle Teile sind Rotationskörper um die z-Achse.")
         for i, p in enumerate(model["parts"]):
@@ -210,8 +246,14 @@ def tab_model(model, ver):
             except Exception as exc:
                 n_hi = n_lo = None
                 st.error(str(exc))
+            planar = st.checkbox("Unteren Spiegel als planare Schichten (radial unendlich, nur die Kavität und der obere Spiegel sind geätzt)",
+                                 key=f"ax_g_planar_{ver}")
             if st.button("Säule erzeugen (ersetzt alle Teile, setzt Emitter in die Kavitätsmitte)", key=f"ax_g_btn_{ver}", disabled=n_hi is None):
                 parts, centre, height = fa.dbr_pillar(int(top), int(bot), radius, lam, hi, lo, n_hi, n_lo, cav)
+                if planar:
+                    k = 2 * int(bot)
+                    model["layers"] = [dict(material=q["material"], z_bottom=q["z_bottom"], height=q["height"]) for q in parts[:k]]
+                    parts = parts[k:]
                 model["parts"] = parts
                 em["z_nm"] = round(centre, 4)
                 rs["wavelength_nm"] = float(lam)
@@ -377,6 +419,12 @@ def tab_run(model, work, ctx):
                                  help="Resonanzen: das Feld jeder Mode; Emitter und Streuung: das Feld in der Mitte des Spektrums.")
     sv["subdivisions"] = int(c[3].slider("Unterteilung je Dreieck", 1, 4, int(sv["subdivisions"]), key="ax_sub",
                                          help="Feldkarten exakt auf den unterteilten Elementen; 2 genügt für p ≤ 3."))
+    if S.ax_task == "emitter":
+        sv["bulk_fem"] = st.checkbox("Purcell-Normierung numerisch auf demselben Netz (genauer, doppelte Rechenzeit)", value=bool(sv.get("bulk_fem", False)),
+                                     key="ax_bulk_fem",
+                                     help="P_bulk aus derselben Quelle auf demselben Netz mit dem Emittermaterial überall, statt der Larmor-Formel: der "
+                                          "Diskretisierungsfehler der schmalen Gauß-Quelle kürzt sich heraus. An einer GaAs-Membran gegen die exakte "
+                                          "Sommerfeld-Lösung: Abweichung 1,4·10⁻³ statt 5,7·10⁻³ (σ = 10 nm, p = 3).")
     errs = [t for lvl, t in fa.validate(model, S.ax_task) if lvl == "error"]
     mesh = S.ax_mesh
     mesh_ok = bool(mesh and not mesh.get("err") and mesh["sig"] == signature(model, S.ax_ms))
@@ -401,7 +449,7 @@ def tab_run(model, work, ctx):
             run_dir.mkdir(parents=True, exist_ok=True)
             for f in ("mesh.msh", "mesh_plot.npz"):
                 shutil.copy(Path(mesh["dir"]) / f, run_dir / f)
-            job = dict(model=copy.deepcopy(model), task=S.ax_task, solver=dict(order=sv["order"], backend=sv["backend"]), subdivisions=sv["subdivisions"],
+            job = dict(model=copy.deepcopy(model), task=S.ax_task, solver=dict(order=sv["order"], backend=sv["backend"], bulk_fem=bool(sv.get("bulk_fem"))), subdivisions=sv["subdivisions"],
                        fields=bool(sv["fields"]), field_at_centre=bool(sv["fields"]))
             (run_dir / "job.json").write_text(json.dumps(job, indent=1), encoding="utf-8")
             S.run_proc = fr.start_worker(ctx["py"], ctx["repo"], run_dir, int(ctx["threads"]), script="fem_axi_worker.py")
