@@ -89,3 +89,50 @@ def test_figures():
     d = dict(points_nm=pts_, simplices=np.array([[0, 1, 2], [1, 3, 2]]), E=np.ones((4, 3), complex), m=1, lam_nm=930.0)
     for q in fa.AXI_QUANTITIES:
         plt.close(fa.fig_axi_field(d, fa.default_model(), q))
+
+
+def test_scattering_settings_and_validation():
+    m = fa.presets()[next(k for k in fa.presets() if k.startswith("Gold-Nanokugel in Wasser"))]
+    assert not [t for lvl, t in fa.validate(m, "scattering") if lvl == "error"]
+    assert fa.wavelength_range(m, "scattering") == (450.0, 700.0)
+    lay = fa.layout(m)
+    assert lay["r_struct"] < lay["r_plane"] < lay["r_in"]
+    pillar = fa.presets()[next(k for k in fa.presets() if "schnell" in k)]
+    assert any("Substrat" in t for lvl, t in fa.validate(pillar, "scattering") if lvl == "error")
+    old = fa.default_model()
+    del old["scattering"]
+    del old["emitter"]["modal"]
+    new = fa.complete(old)
+    assert new["scattering"]["sweep"]["start"] < new["resonance"]["wavelength_nm"] < new["scattering"]["sweep"]["stop"]
+    assert new["emitter"]["modal"] is False
+
+
+def test_mie_reference():
+    pytest.importorskip("scipy")
+    import fem_axi_worker as fw
+    small = fw.mie(500.0, 5.0, 1.5, 1.0)                                 # Rayleigh limit: sigma_sca = 8 pi / 3 k^4 a^6 ((m^2-1)/(m^2+2))^2
+    k, a = 2 * np.pi / 500e-9, 5e-9
+    rayleigh = 8 * np.pi / 3 * k ** 4 * a ** 6 * ((1.5 ** 2 - 1) / (1.5 ** 2 + 2)) ** 2
+    assert small["sigma_sca"] == pytest.approx(rayleigh, rel=1e-3)
+    assert abs(small["sigma_abs"]) < 1e-6 * small["sigma_sca"]
+    lossy = fw.mie(530.0, 40.0, complex(0.5, 2.2), 1.33)
+    assert lossy["sigma_abs"] > 0 and lossy["sigma_ext"] > lossy["sigma_sca"]
+
+
+def test_scattering_and_modal_figures():
+    import matplotlib.pyplot as plt
+    pts = [dict(lam_nm=500.0 + 10 * i, sigma_sca=1e-14 * (i + 1), sigma_abs=2e-14, sigma_ext=1e-14 * (i + 3),
+                mie=dict(sigma_sca=1e-14 * (i + 1), sigma_abs=2e-14, sigma_ext=1e-14 * (i + 3))) for i in range(4)]
+    plt.close(fa.fig_cross_sections(pts, np.pi * 40.0 ** 2, 0.0, "S"))
+    th = np.linspace(0, np.pi, 19).tolist()
+    pt = dict(lam_nm=530.0, theta_deg=30.0, pattern_theta=th, **{f"pattern_{k}": np.ones(19).tolist() for k in ("xz_0", "xz_pi", "yz_0", "yz_pi")})
+    plt.close(fa.fig_pattern(pt))
+    pts_ = np.array([[0.0, -50.0], [50.0, -50.0], [0.0, 50.0], [50.0, 50.0]])
+    d = dict(points_nm=pts_, simplices=np.array([[0, 1, 2], [1, 3, 2]]), E_right=np.zeros((4, 3), complex), E_left=np.zeros((4, 3), complex),
+             lam_nm=530.0, theta_deg=30.0, pol="P", k_bg=2 * np.pi / 530e-9)
+    xz, E = fa.scatter_field(d, "tot")
+    assert np.allclose(np.abs(E[:, 0]), np.cos(np.radians(30.0))) and np.allclose(np.abs(E[:, 2]), np.sin(np.radians(30.0)))
+    for q in fa.SCATTER_QUANTITIES:
+        plt.close(fa.fig_scatter_field(d, fa.default_model(), q))
+    modal = [dict(lam_nm=930.0 + i, purcell=1.5, modal=dict(total=1.5, mode=1.0, background=0.5)) for i in range(3)]
+    plt.close(fa.fig_modal(modal, dict(Q=170.0)))

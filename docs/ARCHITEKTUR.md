@@ -25,7 +25,7 @@
 | `fem_ui.py` | Gemeinsame Streamlit-Bausteine beider Modi (Materialeditor, Tabellen, Bilder mit Download, CSV). |
 | `fem_axi.py` | Rotationskörper ohne hpfem: Modell (Teile im Querschnitt r ≥ 0, z; Substrat; Emitter; Resonanzsuche), Vorlagen (Mikrosäule, Kugel, Au-Nanokugel, Mikroscheibe), DBR-Generator, Prüfungen, Layout mit PML und Messebenen, Gmsh-Meridiannetz (Achse Tag 90, Wand Tag 91, Emitterkasten 101 + Materialindex), Abbildungen. |
 | `fem_axi_app.py` | Seite des Modus „Rotationskörper“ (fünf Reiter), von `fem_app.py` aufgerufen. |
-| `fem_axi_worker.py` | Läuft im hpfem-Python: `AxisymmetricResonance` (Moden der Ordnung m) bzw. `AxisymmetricScattering` mit `axisymmetric_gaussian_dipole` (Purcell-Faktor über `axisymmetric_poynting_flux` durch die Fläche um den Emitterkasten, β durch die Messebenen); Felder über `FieldExporter2D` (ASCII-VTU) als `mode_<k>.npz` / `field_<i>.npz`. |
+| `fem_axi_worker.py` | Läuft im hpfem-Python: `AxisymmetricResonance` (Moden der Ordnung m) bzw. `AxisymmetricScattering` mit `axisymmetric_gaussian_dipole` (Purcell-Faktor über `axisymmetric_poynting_flux` durch die Fläche um den Emitterkasten, β durch die Messebenen; optional `AxisymmetricRieszProjection`); Streuung mit `scatter_orders` und `oblique_plane_wave` (σ_sca über die geschlossene Messfläche, σ_ext über das optische Theorem aus `axisymmetric_far_field`/`superpose_far_field`, Mie-Reihe als Referenz); Felder über `FieldExporter2D` (ASCII-VTU) als `mode_<k>.npz` / `field_<i>.npz` / `scatter_<i>.npz`. |
 | `fem_post.py` | Ergebnistabelle, abgeleitete Felder (|E|, Q, |H|, S), Ableitungen, Resonanzen, Bilanz, Zeit, alle Abbildungen. |
 
 ## Schnittstelle App ↔ Worker

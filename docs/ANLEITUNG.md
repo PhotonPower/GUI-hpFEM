@@ -98,13 +98,31 @@ Q ≈ 172). Dann „Emitter“ mit Spektrum „um die Resonanz“: das Maximum d
 
 | Rechnung | λ_res | Q | F_P | β oben |
 |---|---|---|---|---|
-| GUI, 4 Elemente/λ, p = 2 | 930,47 nm | 170 | 1,76 | 0,32 |
-| GUI, 4 Elemente/λ, p = 3 | 930,65 nm | 172,1 | 1,96 | 0,296 |
+| GUI, 4 Elemente/λ, p = 2 | 930,44 nm | 172,1 | 2,05 | 0,291 |
+| GUI, 4 Elemente/λ, p = 3 | 930,65 nm | 172,1 | 1,97 | 0,295 |
 | Beispiel von hp-FEM, strukturiertes Netz 0,05 λ, p = 3 | 930,65 nm | 172,1 | 1,99 | 0,291 |
 | Beispiel von hp-FEM, schnelle Einstellung (0,1 λ, p = 2) | 930,15 nm | 171 | 2,33 | 0,24 |
 
-Resonanz und Q konvergieren schnell, der Purcell-Faktor langsamer: **für F_P und β mit p = 3 rechnen** (p = 2 liegt etwa 10 % daneben). Der Wert
-2,33 der README von hp-FEM gehört zur groben Schnelleinstellung und ist nicht konvergiert.
+Resonanz und Q konvergieren schnell, der Purcell-Faktor langsamer: **für genaue F_P und β mit p = 3 rechnen** (p = 2 liegt etwa 4 % darüber,
+p = 3 auf 1 % am feinsten Vergleichswert). Der Wert 2,33 der README von hp-FEM gehört zur groben Schnelleinstellung und ist nicht konvergiert.
+Mit Modenzerlegung (p = 2, 7 Wellenlängen): Summe der Moden 1,98 gegen 2,05 direkt an der Resonanz, Anteil der Grundmode 1,06, Hintergrund 0,92.
+
+**Streuung an Partikeln** (Aufgabe „Streuung“): ebene Welle aus der Umgebung unter dem Winkel θ gegen +z (Richtung (sin θ, 0, cos θ)), S
+(E entlang y) oder P (E in der Einfallsebene), Wellenlängenbereich und höchste Azimutordnung |m| (Faustregel k·R + 4; die Summe stoppt früher,
+wenn ±m weniger als 10⁻⁵ der Streuleistung trägt). Ergebnisse: σ_sca, σ_abs, σ_ext über λ (rechts als Effizienz σ/πR²), für eine einzelne Kugel
+mit der Mie-Reihe als gestrichelter Referenz; Streudiagramm dσ/dΩ in der Einfallsebene und senkrecht dazu; Nahfeld (Gesamt- oder Streufeld,
+kartesische Komponenten) in der Einfallsebene. Nur ohne Substrat.
+
+**Gemessen (9.10.2026, p = 3, 6 Elemente/λ):**
+
+| Vorlage | Abweichung zur Mie-Reihe |
+|---|---|
+| Au-Kugel r = 40 nm in Wasser, 450–700 nm, axial | σ_sca ≤ 3·10⁻⁴, σ_ext ≤ 1,4·10⁻³, σ_abs ≤ 6·10⁻³ (relativ) |
+| Si-Kugel r = 75 nm in Luft, θ = 45°, P, 450–800 nm (Ordnungen bis ±3) | σ_sca ≤ 1·10⁻⁴, σ_ext ≤ 1,3·10⁻³; σ_abs als kleine Differenz absolut ≤ 7·10⁻⁶ µm² |
+
+**Modenzerlegung** (Emitter, Spektrum „um die Resonanz“, Haken „Modenzerlegung“): das Purcell-Spektrum als Summe über die Quasi-Normalmoden der
+Resonanzsuche (Riesz-Projektion, PML bei der Zielwellenlänge eingefroren), mit dem Anteil der Resonanz (Lorentz-Kurve) und dem Hintergrund. Die
+Summe weicht von der direkten Rechnung um wenige Prozent ab (eingefrorene PML). Kostet etwa 16 Lösungen je Pol und 48 für den Hintergrund.
 
 **Emitter auf der Achse** koppeln nur an m = 0 (axial) und m = ±1 (senkrecht). Flüstergalerie-Moden (große m) einer Scheibe sind deshalb nur als
 Resonanzen zugänglich (Vorlage „Mikroscheibe“, m = 12 bei etwa 975 nm).

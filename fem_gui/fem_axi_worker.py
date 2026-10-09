@@ -10,6 +10,14 @@ Reads <job>/job.json (model of fem_axi, task, solver settings) and <job>/mesh.ms
                     (power through the closed surface around the emitter box over the Larmor power of the smeared dipole in the bulk medium
                     of the emitter), the fractions through the plane above (beta) and below the structure; optionally the sweep is centred
                     on the resonance found first (+- k linewidths); the fields at the chosen points (field_<i>.npz).
+  task "scattering": a plane wave from the homogeneous background at the angle theta to the axis (S or P), expanded in the orders
+                    m = 0, +-1, ... (hpfem.oblique_plane_wave, scatter_orders until the pair +-m carries less than tol of the power): the
+                    scattering cross-section from the scattered power through the closed measurement box, the extinction from the optical
+                    theorem on the far field in the forward direction (axisymmetric_far_field, superpose_far_field), absorption = extinction -
+                    scattering; the differential cross-section in the planes y = 0 and x = 0; the near field in the plane of incidence
+                    (scatter_<i>.npz); for a single sphere the Mie series as reference.
+  emitter option "modal": the Purcell spectrum also as a sum over the quasi-normal modes (hpfem.AxisymmetricRieszProjection, PML frozen at the
+                    target wavelength), with the share of the chosen resonance and the background.
 writes <job>/results.json after every point.
 
 Progress lines: PROGRESS i/n ...  PHASE name  WARN ...  ERROR ...  CANCELLED  DONE.  Cancellation: <job>/cancel, between the points.
@@ -58,8 +66,10 @@ class Job:
         return (self.folder / "cancel").exists()
 
     def materials(self, lam_nm):
-        """MaterialMap at lam_nm for every tag of the mesh (the emitter box carries 101 + index with the material of 1 + index)."""
-        mm = self.h.MaterialMap()
+        """MaterialMap at lam_nm for every tag of the mesh (the emitter box carries 101 + index with the material of 1 + index); the background
+        of the map is the surrounding medium (the contrast source of the scattered-field formulation is measured against it)."""
+        e_bg = fm.eps_at(self.model["materials"][self.model["background"]], lam_nm)
+        mm = self.h.MaterialMap(self.h.Material(complex(e_bg)))
         eps = {}
         for t in self.tags:
             name = self.names[(t - 1) % fa.TAG_SOURCE]
@@ -85,7 +95,7 @@ class Job:
 
 
 # -------------------------------------------------------------------------------------------------------------- fields
-def export_field(job, meridian, azimuthal, subdivisions):
+def export_field(job, meridian, azimuthal, subdivisions, normalise=True):
     """(points [nm], simplices, E (n, 3) = (E_r, E_phi, E_z), tag per simplex) from hpfem.FieldExporter2D on the subdivided mesh, only the
     cells inside the PML box (the PML cells carry the stretched field)."""
     h = job.h
@@ -123,7 +133,7 @@ def export_field(job, meridian, azimuthal, subdivisions):
     remap = np.full(len(pts), -1, dtype=np.int64)
     remap[used] = np.arange(len(used))
     field = field[used]
-    scale = np.nanmax(np.abs(field)) or 1.0
+    scale = (np.nanmax(np.abs(field)) or 1.0) if normalise else 1.0
     return dict(points_nm=pts[used] / NM, simplices=remap[conn].astype(np.int32), E=(field / scale).astype(np.complex64), tag=tags.astype(np.int32),
                 scale=float(scale))
 
@@ -146,7 +156,8 @@ def resonances(job, lam_nm, m, num_modes, krylov=0):
     job.backend(setup)
     say("PHASE eigensolve")
     t0 = time.time()
-    raw = h.AxisymmetricResonance(job.nd, job.h1, setup).solve()
+    job.last_problem = h.AxisymmetricResonance(job.nd, job.h1, setup)
+    raw = job.last_problem.solve()
     dt = time.time() - t0
     modes = []
     for k, md in enumerate(raw):
@@ -229,6 +240,156 @@ def emitter_point(job, lam_nm, surfaces, em, want_field=False):
     return res, fld
 
 
+def box_surface(job):
+    """The closed measurement box r <= r_plane, z_plane_bottom <= z <= z_plane_top (mesh lines), normals outwards (cells inside)."""
+    h, mesh, lay = job.h, job.mesh, job.lay
+    V = np.asarray(mesh.vertices)
+    centroids = np.asarray(mesh.cell_centroids)
+    rp, zb, zt = lay["r_plane"] * NM, lay["z_plane_bottom"] * NM, lay["z_plane_top"] * NM
+    tol = 1e-7 * max(rp, abs(zb), abs(zt), 1e-9)
+    facets = []
+    for f in range(mesh.num_facets):
+        v = V[mesh.facet_vertices(f)]
+        on_top = np.all(np.abs(v[:, 1] - zt) < tol) and np.all(v[:, 0] <= rp + tol)
+        on_bottom = np.all(np.abs(v[:, 1] - zb) < tol) and np.all(v[:, 0] <= rp + tol)
+        on_side = np.all(np.abs(v[:, 0] - rp) < tol) and np.all((v[:, 1] >= zb - tol) & (v[:, 1] <= zt + tol))
+        if not (on_top or on_bottom or on_side):
+            continue
+        cells = [c for c in mesh.facet_cells(f) if c >= 0]
+        inside = [c for c in cells if centroids[c][0] < rp and zb < centroids[c][1] < zt]
+        if inside:
+            facets.append(h.Surface2D.Facet(f, inside[0]))
+    s_ = h.Surface2D()
+    s_.facets = facets
+    return s_
+
+
+def mie(lam_nm, radius_nm, n_sphere, n_bg, lmax=None):
+    """Mie cross-sections [m^2] of a sphere (Bohren & Huffman 4.61, 4.62; exp(-i omega t), Im n > 0 lossy)."""
+    import scipy.special as sp
+
+    k = 2 * np.pi * n_bg / (lam_nm * NM)
+    a = radius_nm * NM
+    x, m = k * a, complex(n_sphere) / n_bg
+    lmax = lmax or int(x + 4 * x ** (1 / 3) + 10)
+    ls = np.arange(1, lmax + 1)
+
+    def psi(z):
+        return z * sp.spherical_jn(ls, z)
+
+    def dpsi(z):
+        return sp.spherical_jn(ls, z) + z * sp.spherical_jn(ls, z, derivative=True)
+
+    def xi(z):
+        return z * (sp.spherical_jn(ls, z) + 1j * sp.spherical_yn(ls, z))
+
+    def dxi(z):
+        return (sp.spherical_jn(ls, z) + 1j * sp.spherical_yn(ls, z)) + z * (sp.spherical_jn(ls, z, derivative=True) + 1j * sp.spherical_yn(ls, z, derivative=True))
+
+    mx = m * x
+    an = (m * psi(mx) * dpsi(x) - psi(x) * dpsi(mx)) / (m * psi(mx) * dxi(x) - xi(x) * dpsi(mx))
+    bn = (psi(mx) * dpsi(x) - m * psi(x) * dpsi(mx)) / (psi(mx) * dxi(x) - m * xi(x) * dpsi(mx))
+    c = 2 * np.pi / k ** 2
+    sca = c * float(np.sum((2 * ls + 1) * (np.abs(an) ** 2 + np.abs(bn) ** 2)))
+    ext = c * float(np.sum((2 * ls + 1) * (an + bn).real))
+    return dict(sigma_sca=sca, sigma_ext=ext, sigma_abs=ext - sca)
+
+
+def single_sphere(model):
+    """(radius, material) if the model is one sphere centred on the axis in the background without substrate, else None."""
+    parts = model["parts"]
+    if len(parts) == 1 and parts[0]["type"] == "sphere" and not model.get("substrate"):
+        return float(parts[0]["radius"]), parts[0]["material"]
+    return None
+
+
+def scattering_point(job, lam_nm, surface, want_field=False, theta_samples=181):
+    """Plane wave at lam_nm: cross-sections, far-field pattern, near field."""
+    h, model = job.h, job.model
+    sc = model["scattering"]
+    omega = 2 * np.pi * h.constants.c0 / (lam_nm * NM)
+    mm, eps = job.materials(lam_nm)
+    n_bg = float(np.sqrt(eps.get(model["background"], fm.eps_at(model["materials"][model["background"]], lam_nm)) + 0j).real)
+    k0 = 2 * np.pi / (lam_nm * NM)
+    k = n_bg * k0
+    th = np.radians(float(sc["theta_deg"]))
+    pol = h.PlanePolarisation.S if sc["pol"] == "S" else h.PlanePolarisation.P
+    setup = h.AxisymmetricScatteringSetup()
+    setup.omega = omega
+    setup.materials = mm
+    setup.axis_tag = fa.TAG_AXIS
+    setup.pec_tags = [fa.TAG_WALL]
+    setup.pml = job.pml(k0)
+    setup.extra_quadrature_order = int(job.solver.get("extra_quadrature_order", 4))
+    job.backend(setup)
+    t0 = time.time()
+    res = h.scatter_orders(job.nd, job.h1, setup, lambda m: h.oblique_plane_wave(1.0, k, th, pol, m), int(sc.get("max_order", 8)), surface,
+                           float(sc.get("tol", 1e-5)))
+    t_solve = time.time() - t0
+    orders = [int(m) for m in res.orders]
+    intensity = n_bg / (2 * h.constants.Z0)                              # |E0| = 1 V/m in the background
+    sigma_sca = float(res.total_power()) / intensity
+    thetas = sorted(set(np.linspace(0.0, np.pi, theta_samples).tolist()) | {float(th)})
+    patterns = [h.axisymmetric_far_field(job.nd, job.h1, f.meridian, f.azimuthal, m, omega, mm, surface, thetas) for m, f in zip(orders, res.fields)]
+    fwd = h.superpose_far_field(patterns, orders, 0.0)
+    i_th = int(np.argmin(np.abs(np.asarray(thetas) - th)))
+    F_e = complex(np.asarray(fwd.f_phi)[i_th]) if sc["pol"] == "S" else complex(np.asarray(fwd.f_theta)[i_th])
+    sigma_ext = 4 * np.pi / k * F_e.imag
+    out = dict(lam_nm=lam_nm, sigma_sca=sigma_sca, sigma_ext=sigma_ext, sigma_abs=sigma_ext - sigma_sca, orders=orders,
+               power_by_order=[float(v) / intensity for v in res.power], n_bg=n_bg, theta_deg=float(sc["theta_deg"]), dofs=job.dofs, time_s=t_solve)
+    pattern = {"pattern_theta": list(thetas)}
+    for key, phi in (("xz_0", 0.0), ("xz_pi", np.pi), ("yz_0", np.pi / 2), ("yz_pi", 3 * np.pi / 2)):
+        F = h.superpose_far_field(patterns, orders, phi)
+        pattern[f"pattern_{key}"] = (np.abs(np.asarray(F.f_theta)) ** 2 + np.abs(np.asarray(F.f_phi)) ** 2).tolist()   # dsigma/dOmega, |E0| = 1
+    out.update(pattern)
+    sph = single_sphere(model)
+    if sph:
+        try:
+            n_s = complex(np.sqrt(fm.eps_at(model["materials"][sph[1]], lam_nm) + 0j))
+            out["mie"] = mie(lam_nm, sph[0], n_s, n_bg)
+        except Exception as exc:
+            say(f"WARN Mie-Referenz nicht berechnet: {exc}")
+    fld = None
+    if want_field:
+        right = left = None
+        for m, f in zip(orders, res.fields):
+            e = export_field(job, f.meridian, f.azimuthal, job.job.get("subdivisions", 2), normalise=False)
+            E = e["E"].astype(complex)                                 # (E_r, E_phi, E_z) of order m at phi = 0
+            r_ = np.column_stack([E[:, 0], E[:, 1], E[:, 2]])          # Cartesian at phi = 0: (E_x, E_y, E_z)
+            l_ = np.column_stack([-E[:, 0], -E[:, 1], E[:, 2]]) * (-1.0) ** m   # at phi = pi: e^{i m pi}, e_r = -x, e_phi = -y
+            right = r_ if right is None else right + r_
+            left = l_ if left is None else left + l_
+            pts, simp = e["points_nm"], e["simplices"]
+        fld = dict(points_nm=pts, simplices=simp, E_right=right.astype(np.complex64), E_left=left.astype(np.complex64), lam_nm=lam_nm,
+                   theta_deg=float(sc["theta_deg"]), pol=sc["pol"], k_bg=k, kind="scatter")
+    return out, fld
+
+
+def modal_purcell(job, em, values, modes_raw, problem, chosen_index, m):
+    """Purcell factor over `values` [nm] as a sum over the quasi-normal modes (Riesz projection on the resonance pencil): (total, share of the
+    chosen mode, background) per wavelength and the convergence of the contours. As examples/micropillar_qd of hp-FEM."""
+    h = job.h
+    omegas = [2 * np.pi * h.constants.c0 / (lam * NM) for lam in values]
+    rs = h.RieszSetup()
+    rs.poles = [r.omega for r in modes_raw]
+    rs.omega_min, rs.omega_max = min(omegas), max(omegas)
+    rs.points_per_pole, rs.background_points = 16, 40
+    rs.background_aspect = 0.5
+    riesz = h.AxisymmetricRieszProjection(problem, rs)
+    axial = em["orientation"] == "axial"
+    sigma = float(em["sigma_nm"]) * NM
+    f = h.axisymmetric_gaussian_dipole(float(em["z_nm"]) * NM, 1.0, h.AxisDipole.AXIAL if axial else h.AxisDipole.TRANSVERSE, sigma, 1.0, m)
+    source = riesz.add_current(lambda x: f(x) / (1j * h.constants.mu0))
+    power = riesz.add_emitted_power(source)
+    riesz.run()
+    contours = riesz.contours
+    spec = np.asarray(riesz.spectrum(source, power, omegas))
+    chosen_omega = modes_raw[chosen_index].omega
+    mode_row = next((i for i, c in enumerate(contours) if chosen_omega in c.poles), None)
+    factor = 1.0 if axial else 2.0
+    return spec, mode_row, factor, max(float(c.convergence) for c in contours), len(contours[-1].poles)
+
+
 def emitter_surfaces(job):
     h = job.h
     em = job.model["emitter"]
@@ -291,6 +452,38 @@ def main(argv=None) -> int:
                     fld.update(lam_nm=md["lam_nm"], Q=md["Q"], m=md["m"], kind="mode")
                     np.savez_compressed(folder / f"mode_{md['k']}.npz", **fld)
             say(f"  {dt:.1f} s")
+        elif task == "scattering":
+            sc = model["scattering"]
+            values = fa.sweep_values(sc["sweep"])
+            surface = box_surface(job)
+            say(f"measurement box: {len(surface)} facets; plane wave theta = {sc['theta_deg']:g} deg, {sc['pol']}, orders up to |m| = {sc['max_order']}")
+            want = set(jd.get("field_indices", []))
+            if jd.get("field_at_centre", True):
+                want.add(len(values) // 2)
+            n = len(values)
+            for i, lam in enumerate(values):
+                if job.cancelled():
+                    say("CANCELLED")
+                    out["cancelled"] = True
+                    flush()
+                    return 0
+                say(f"PROGRESS {i + 1}/{n} lambda = {lam:.3f} nm")
+                try:
+                    res, fld = scattering_point(job, float(lam), surface, want_field=i in want)
+                    res["index"] = i
+                    out["points"].append(res)
+                    if fld is not None:
+                        np.savez_compressed(folder / f"scatter_{i}.npz", **fld)
+                    msg = (f"  {res['time_s']:.1f} s, orders {res['orders']}: sigma_sca = {res['sigma_sca'] * 1e12:.5g} um^2, "
+                           f"sigma_abs = {res['sigma_abs'] * 1e12:.5g} um^2, sigma_ext = {res['sigma_ext'] * 1e12:.5g} um^2")
+                    if res.get("mie"):
+                        mi = res["mie"]
+                        msg += f" | Mie: {mi['sigma_sca'] * 1e12:.5g} / {mi['sigma_abs'] * 1e12:.5g} / {mi['sigma_ext'] * 1e12:.5g}"
+                    say(msg)
+                except Exception as exc:
+                    say(f"ERROR point {i}: {exc}")
+                    out["points"].append(dict(index=i, lam_nm=float(lam), error=str(exc)))
+                flush()
         else:
             em = model["emitter"]
             sw = em["sweep"]
@@ -307,8 +500,22 @@ def main(argv=None) -> int:
                 values = list(np.linspace(best["lam_nm"] - span, best["lam_nm"] + span, max(int(sw["n"]), 1)))
                 say(f"  resonance {best['lam_nm']:.3f} nm, Q = {best['Q']:.4g}: spectrum {values[0]:.3f} ... {values[-1]:.3f} nm")
                 flush()
+                modal = None
+                if em.get("modal"):
+                    say("PHASE riesz (modal expansion)")
+                    try:
+                        t0 = time.time()
+                        spec, row, factor, conv, npoles = modal_purcell(job, em, values, raw, job.last_problem, best["k"], m)
+                        modal = (spec, row, factor)
+                        out["resonance"]["modal"] = dict(convergence=conv, poles=npoles, time_s=time.time() - t0)
+                        say(f"  Riesz projection: {npoles} poles in the background contour, half-rule difference {conv:.1e}, {time.time() - t0:.1f} s")
+                    except Exception as exc:
+                        say(f"WARN Modenzerlegung fehlgeschlagen: {exc}")
             else:
                 values = fa.sweep_values(sw)
+                modal = None
+                if em.get("modal"):
+                    say("WARN die Modenzerlegung braucht das Spektrum „um die Resonanz“ (die Moden der Resonanzsuche); übersprungen")
             surfaces = emitter_surfaces(job)
             want = set(jd.get("field_indices", []))
             if jd.get("field_at_centre", True):
@@ -324,6 +531,11 @@ def main(argv=None) -> int:
                 try:
                     res, fld = emitter_point(job, float(lam), surfaces, em, want_field=i in want)
                     res["index"] = i
+                    if modal is not None:
+                        spec, row, factor = modal
+                        tot = factor * float(spec[:, i].sum().real) / res["P_bulk"]
+                        res["modal"] = dict(total=tot, mode=factor * float(spec[row, i].real) / res["P_bulk"] if row is not None else None,
+                                            background=factor * float(spec[-1, i].real) / res["P_bulk"])
                     out["points"].append(res)
                     if fld is not None:
                         np.savez_compressed(folder / f"field_{i}.npz", **fld)

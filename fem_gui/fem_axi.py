@@ -16,10 +16,14 @@ Model (JSON dict, lengths in nm):
     domain = {margin_nm, pml_nm}: distance from the structure to the PML and its thickness (PML on the outer side, at the top and bottom).
     resonance = {wavelength_nm, m, num_modes}
     emitter = {z_nm, orientation ("transverse": dipole perpendicular to the axis, orders m = +-1; "axial": along the axis, m = 0),
-               sigma_nm (Gaussian smearing), sweep = {mode "fixed" | "resonance", start, stop, n, linewidths}}
+               sigma_nm (Gaussian smearing), sweep = {mode "fixed" | "resonance", start, stop, n, linewidths}, modal (Riesz expansion)}
+    scattering = {theta_deg (angle of incidence to the +z axis, the wave runs along (sin theta, 0, cos theta)), pol ("S": E along y,
+                  "P": E in the x-z plane), sweep = {start, stop, n}, max_order (largest |m|), tol (stop when the pair +-m carries less)}
 
 Mesh (MSH 4.1): surfaces tag 1 + index of the material; the cells of the small box around the emitter 101 + index (same material, the closed
-surface around them measures the emitted power); curves: the axis r = 0 tag 90, the outer wall behind the PML tag 91 (PEC).
+surface around them measures the emitted power); curves: the axis r = 0 tag 90, the outer wall behind the PML tag 91 (PEC). Mesh lines at the
+measurement planes z_plane_top / z_plane_bottom (r < r_in) and at r = r_plane between them: the closed box of the scattered power and the far
+field.
 """
 from __future__ import annotations
 
@@ -75,8 +79,13 @@ def default_model():
         "domain": {"margin_nm": 600.0, "pml_nm": 1000.0},
         "resonance": {"wavelength_nm": 900.0, "m": 1, "num_modes": 6},
         "emitter": {"z_nm": 520.0, "orientation": "axial", "sigma_nm": 10.0,
-                    "sweep": {"mode": "fixed", "start": 800.0, "stop": 1000.0, "n": 11, "linewidths": 1.5}},
+                    "sweep": {"mode": "fixed", "start": 800.0, "stop": 1000.0, "n": 11, "linewidths": 1.5}, "modal": False},
+        "scattering": default_scattering(800.0, 1200.0),
     }
+
+
+def default_scattering(start, stop, n=21):
+    return {"theta_deg": 0.0, "pol": "S", "sweep": {"start": float(start), "stop": float(stop), "n": int(n)}, "max_order": 8, "tol": 1e-5}
 
 
 def dbr_pillar(top_pairs, bottom_pairs, radius, lam, hi="GaAs", lo="AlAs", n_hi=3.53, n_lo=2.95, cavity_lambdas=1.0):
@@ -136,6 +145,28 @@ def presets():
         "emitter": {"z_nm": 50.0, "orientation": "axial", "sigma_nm": 2.0,
                     "sweep": {"mode": "fixed", "start": 450.0, "stop": 700.0, "n": 26, "linewidths": 1.5}},
     }
+    P["Gold-Nanokugel in Wasser: Streuung und Absorption (Mie-Vergleich)"] = {
+        "kind": "axi", "name": "Au-Kugel r = 40 nm in Wasser",
+        "materials": {"Wasser": {"type": "library", "name": "water"}, "Au": {"type": "library", "name": "Au"}},
+        "background": "Wasser", "substrate": None,
+        "parts": [dict(type="sphere", material="Au", z_center=0.0, radius=40.0)],
+        "domain": {"margin_nm": 200.0, "pml_nm": 400.0},
+        "resonance": {"wavelength_nm": 530.0, "m": 1, "num_modes": 4},
+        "emitter": {"z_nm": 50.0, "orientation": "axial", "sigma_nm": 2.0,
+                    "sweep": {"mode": "fixed", "start": 450.0, "stop": 700.0, "n": 26, "linewidths": 1.5}, "modal": False},
+        "scattering": dict(default_scattering(450.0, 700.0, 26), max_order=4),
+    }
+    P["Silizium-Nanokugel: Mie-Resonanzen (magnetischer Dipol, schräger Einfall)"] = {
+        "kind": "axi", "name": "Si-Kugel r = 75 nm, Einfall 45°",
+        "materials": {"Luft": {"type": "library", "name": "air"}, "Si": {"type": "library", "name": "Si"}},
+        "background": "Luft", "substrate": None,
+        "parts": [dict(type="sphere", material="Si", z_center=0.0, radius=75.0)],
+        "domain": {"margin_nm": 300.0, "pml_nm": 500.0},
+        "resonance": {"wavelength_nm": 600.0, "m": 1, "num_modes": 4},
+        "emitter": {"z_nm": 100.0, "orientation": "axial", "sigma_nm": 5.0,
+                    "sweep": {"mode": "fixed", "start": 450.0, "stop": 800.0, "n": 15, "linewidths": 1.5}, "modal": False},
+        "scattering": dict(default_scattering(450.0, 800.0, 36), theta_deg=45.0, pol="P", max_order=8),
+    }
     P["Mikroscheibe n = 2 auf Glas (Flüstergalerie-Moden, m = 12)"] = {
         "kind": "axi", "name": "Mikroscheibe r = 1,5 µm, 250 nm dick",
         "materials": {"Luft": {"type": "library", "name": "air"}, "Scheibe": _idx(2.0), "Glas": _idx(1.45)},
@@ -147,7 +178,19 @@ def presets():
         "emitter": {"z_nm": 125.0, "orientation": "axial", "sigma_nm": 20.0,
                     "sweep": {"mode": "fixed", "start": 900.0, "stop": 1050.0, "n": 11, "linewidths": 1.5}},
     }
-    return P
+    return {k: complete(v) for k, v in P.items()}
+
+
+def complete(m):
+    """Adds the keys of newer versions (scattering, modal) to a model."""
+    if not m.get("scattering"):
+        lam = float(m.get("resonance", {}).get("wavelength_nm", 900.0))
+        m["scattering"] = default_scattering(round(0.7 * lam), round(1.4 * lam))
+    base = default_model()
+    for k, v in base.items():
+        m.setdefault(k, copy.deepcopy(v))
+    m["emitter"].setdefault("modal", False)
+    return m
 
 
 def load_model(text):
@@ -155,8 +198,7 @@ def load_model(text):
     if m.get("kind") != "axi":
         raise ValueError("Kein Modell eines Rotationskörpers (kind = axi)")
     base = default_model()
-    for k, v in base.items():
-        m.setdefault(k, copy.deepcopy(v))
+    complete(m)
     for k in ("domain", "resonance", "emitter"):
         for kk, vv in base[k].items():
             m[k].setdefault(kk, copy.deepcopy(vv))
@@ -234,7 +276,7 @@ def layout(model):
     z_lo, z_hi = z_lo_s - margin, z_hi_s + margin
     return dict(r_struct=r_max, z_struct_bottom=z_lo_s, z_struct_top=z_hi_s, r_in=r_in, r_out=r_in + pml, z_lo=z_lo, z_hi=z_hi,
                 z_bot=z_lo - pml, z_top=z_hi + pml, pml=pml, margin=margin,
-                z_plane_top=z_hi_s + 0.5 * margin, z_plane_bottom=z_lo_s - 0.5 * margin)
+                z_plane_top=z_hi_s + 0.5 * margin, z_plane_bottom=z_lo_s - 0.5 * margin, r_plane=r_max + 0.5 * margin)
 
 
 def source_box(model):
@@ -248,6 +290,9 @@ def wavelength_range(model, task="resonance"):
     lam_r = float(model["resonance"]["wavelength_nm"])
     if task == "resonance":
         return lam_r * 0.95, lam_r * 1.05
+    if task == "scattering":
+        sw = model.get("scattering", {}).get("sweep") or {"start": lam_r, "stop": lam_r}
+        return float(min(sw["start"], sw["stop"])), float(max(sw["start"], sw["stop"]))
     sw = model["emitter"]["sweep"]
     if sw["mode"] == "resonance":
         return lam_r * 0.95, lam_r * 1.05
@@ -306,6 +351,19 @@ def validate(model, task="resonance"):
     r = model["resonance"]
     if int(r["m"]) < 0:
         out.append(("error", "Die Azimutordnung m muss ≥ 0 sein (−m hat dieselben Moden)."))
+    if task == "scattering":
+        sc = model.get("scattering") or {}
+        if model.get("substrate"):
+            out.append(("error", "Streuung ebener Wellen geht nur in homogener Umgebung: das Substrat entfernen (die einfallende Welle muss eine "
+                                 "Lösung im Umgebungsmedium sein; Partikel auf Substraten folgen mit einem geschichteten Hintergrund)."))
+        if not 0.0 <= float(sc.get("theta_deg", 0.0)) <= 180.0:
+            out.append(("error", "Einfallswinkel zwischen 0° und 180° (gegen die +z-Achse)."))
+        if int(sc.get("max_order", 8)) < 1:
+            out.append(("error", "Höchste Azimutordnung mindestens 1."))
+        for p in model["parts"]:
+            if part_bbox(p)[1] > 0 and material_at(model, part_bbox(p)[1] + 0.25 * float(model["domain"]["margin_nm"]), 0.5 * (part_bbox(p)[2] + part_bbox(p)[3])) != model["background"]:
+                out.append(("warning", "Die Messfläche der Streuleistung liegt nicht vollständig in der Umgebung."))
+                break
     if task == "emitter":
         em = model["emitter"]
         a = source_box(model)
@@ -425,6 +483,142 @@ def fig_purcell(points, resonance=None):
     for a in axs:
         a.grid(alpha=0.3)
         a.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def fig_cross_sections(points, geometric_nm2=None, theta=0.0, pol="S"):
+    """Scattering, absorption and extinction cross-sections over the wavelength (and the Mie series where the worker gave it)."""
+    import matplotlib.pyplot as plt
+
+    ok = [p for p in points if "error" not in p]
+    fig, ax = plt.subplots(figsize=(8, 4.6))
+    if not ok:
+        ax.text(0.5, 0.5, "keine Punkte", ha="center")
+        return fig
+    lam = [p["lam_nm"] for p in ok]
+    scale = 1e12                                                        # m^2 -> um^2
+    for key, lab, col, mk in (("sigma_ext", "Extinktion", "C0", "o-"), ("sigma_sca", "Streuung", "C1", "s-"), ("sigma_abs", "Absorption", "C3", "^-")):
+        ax.plot(lam, [p[key] * scale for p in ok], mk, ms=4, color=col, label=f"σ_{lab[:3].lower()} {lab}")
+        if all(p.get("mie") for p in ok):
+            ax.plot(lam, [p["mie"][key] * scale for p in ok], "--", color=col, lw=1.0, alpha=0.8, label=f"{lab} (Mie)")
+    ax.set_xlabel("Wellenlänge (nm)")
+    ax.set_ylabel("Querschnitt (µm²)")
+    if geometric_nm2:
+        sec = ax.secondary_yaxis("right", functions=(lambda v: v / (geometric_nm2 * 1e-6), lambda q: q * geometric_nm2 * 1e-6))
+        sec.set_ylabel("Effizienz Q = σ / (π R²)")
+    ax.set_title(f"Einfall θ = {theta:g}° gegen die Achse, {pol}-polarisiert", fontsize=9)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8, ncol=2)
+    fig.tight_layout()
+    return fig
+
+
+def fig_pattern(pt):
+    """Differential scattering cross-section dσ/dΩ in the plane of incidence (x-z) and perpendicular to it (y-z), polar plot."""
+    import matplotlib.pyplot as plt
+
+    th = np.asarray(pt["pattern_theta"])
+    fig, ax = plt.subplots(figsize=(6, 6), subplot_kw={"projection": "polar"})
+    for key, lab, col in (("xz", "Einfallsebene (x-z)", "C0"), ("yz", "senkrecht dazu (y-z)", "C1")):
+        a, b = np.asarray(pt[f"pattern_{key}_0"]), np.asarray(pt[f"pattern_{key}_pi"])
+        ang = np.concatenate([th, 2 * np.pi - th[::-1]])
+        val = np.concatenate([a, b[::-1]]) * 1e12
+        ax.plot(ang, val, color=col, label=lab)
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+    ti = np.radians(pt.get("theta_deg", 0.0))
+    ax.annotate("", xy=(ti, ax.get_rmax() * 0.9), xytext=(ti + np.pi, ax.get_rmax() * 0.9),
+                arrowprops=dict(arrowstyle="->", color="0.4", lw=1.0))
+    ax.set_title(f"dσ/dΩ (µm²/sr) bei λ = {pt['lam_nm']:.1f} nm; 0° = +z, Pfeil: Einfallsrichtung", fontsize=9)
+    ax.legend(fontsize=8, loc="lower left", bbox_to_anchor=(-0.1, -0.12))
+    fig.tight_layout()
+    return fig
+
+
+SCATTER_QUANTITIES = {"|E| gesamt": ("tot", "abs"), "|E| Streufeld": ("sca", "abs"), "|E_x| gesamt": ("tot", 0), "|E_y| gesamt": ("tot", 1),
+                      "|E_z| gesamt": ("tot", 2), "Re E_x gesamt": ("tot", "r0"), "Re E_y gesamt": ("tot", "r1"), "Re E_z gesamt": ("tot", "r2")}
+
+
+def scatter_field(d, which):
+    """Cartesian field in the plane of incidence: (points (2n, 2) as x = +-r, z; values (2n, 3)) of the scattered or the total field."""
+    pts = d["points_nm"]
+    E_r, E_l = d["E_right"].astype(complex), d["E_left"].astype(complex)
+    x = np.concatenate([pts[:, 0], -pts[:, 0]])
+    z = np.concatenate([pts[:, 1], pts[:, 1]])
+    E = np.concatenate([E_r, E_l])
+    if which == "tot":
+        th = np.radians(float(d["theta_deg"]))
+        e = np.array([0.0, 1.0, 0.0]) if str(d["pol"]) == "S" else np.array([np.cos(th), 0.0, -np.sin(th)])
+        k = float(d["k_bg"]) * 1e-9                                      # per nm
+        E = E + e[None, :] * np.exp(1j * k * (x * np.sin(th) + z * np.cos(th)))[:, None]
+    return np.column_stack([x, z]), E
+
+
+def fig_scatter_field(d, model, key, log=False, zoom=None, figsize=(7.4, 6.4)):
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm, Normalize
+    from matplotlib.tri import Triangulation
+
+    which, comp = SCATTER_QUANTITIES[key]
+    xz, E = scatter_field(d, which)
+    if comp == "abs":
+        f, signed = np.sqrt((np.abs(E) ** 2).sum(axis=1)), False
+    elif isinstance(comp, int):
+        f, signed = np.abs(E[:, comp]), False
+    else:
+        f, signed = E[:, int(comp[1])].real, True
+    n = len(d["points_nm"])
+    tri = np.concatenate([d["simplices"], d["simplices"] + n])
+    top = float(np.nanmax(np.abs(f))) or 1.0
+    if signed:
+        norm, cm = Normalize(-top, top), "RdBu_r"
+    elif log:
+        f = np.maximum(f, top * 1e-3)
+        norm, cm = LogNorm(top * 1e-3, top), "inferno"
+    else:
+        norm, cm = Normalize(0, top), "inferno"
+    fig, ax = plt.subplots(figsize=figsize)
+    im = ax.tripcolor(Triangulation(xz[:, 0], xz[:, 1], tri), f, shading="gouraud", cmap=cm, norm=norm)
+    fig.colorbar(im, ax=ax, fraction=0.046, label=key + " (|E₀| = 1)")
+    for p in model["parts"]:
+        q = part_polygon(p)
+        for s_ in (1, -1):
+            ax.plot(np.append(s_ * q[:, 0], s_ * q[0, 0]), np.append(q[:, 1], q[0, 1]), color="w", lw=0.6, alpha=0.8)
+    th = np.radians(float(d["theta_deg"]))
+    R = 0.8 * (zoom[0] if zoom else xz[:, 0].max())
+    ax.annotate("", xy=(0.25 * R * np.sin(th) - 0.6 * R * np.sin(th), 0.25 * R * np.cos(th) - 0.6 * R * np.cos(th)),
+                xytext=(-0.6 * R * np.sin(th) - 0.35 * R * np.sin(th), -0.6 * R * np.cos(th) - 0.35 * R * np.cos(th)),
+                arrowprops=dict(arrowstyle="->", color="w", lw=1.2))
+    ax.set_aspect("equal")
+    if zoom:
+        ax.set_xlim(-zoom[0], zoom[0])
+        ax.set_ylim(zoom[1], zoom[2])
+    ax.set_xlabel("x (nm)  (Einfallsebene y = 0)")
+    ax.set_ylabel("z (nm)")
+    ax.set_title(f"{key}, λ = {float(d['lam_nm']):.1f} nm, θ = {float(d['theta_deg']):g}°, {str(d['pol'])}", fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def fig_modal(points, chosen=None):
+    """Purcell spectrum of the direct solves against the modal expansion (Riesz projection): total, the share of the chosen mode, background."""
+    import matplotlib.pyplot as plt
+
+    ok = [p for p in points if "error" not in p and p.get("modal")]
+    fig, ax = plt.subplots(figsize=(8, 4.2))
+    if not ok:
+        ax.text(0.5, 0.5, "keine Modenzerlegung", ha="center")
+        return fig
+    lam = [p["lam_nm"] for p in ok]
+    ax.plot(lam, [p["purcell"] for p in ok], "o", color="k", ms=5, label="direkt (je Wellenlänge gelöst)")
+    ax.plot(lam, [p["modal"]["total"] for p in ok], "-", color="C0", label="Summe der Moden + Hintergrund (Riesz)")
+    ax.plot(lam, [p["modal"]["mode"] for p in ok], "--", color="C3", label="Anteil der Resonanz" + (f" (Q = {chosen['Q']:.0f})" if chosen else ""))
+    ax.plot(lam, [p["modal"]["background"] for p in ok], ":", color="0.4", label="Hintergrund (übrige Pole, Kontinuum)")
+    ax.set_xlabel("Wellenlänge (nm)")
+    ax.set_ylabel("Purcell-Faktor")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
     fig.tight_layout()
     return fig
 
@@ -568,6 +762,8 @@ def build_mesh(model, ms, out_dir, task="resonance"):
         for zp in (lay["z_plane_top"], lay["z_plane_bottom"]):
             if lay["z_lo"] < zp < lay["z_hi"]:
                 lines.append(occ.addLine(occ.addPoint(0, zp, 0), occ.addPoint(lay["r_in"], zp, 0)))
+        if 0 < lay["r_plane"] < lay["r_in"]:                         # side of the closed measurement box
+            lines.append(occ.addLine(occ.addPoint(lay["r_plane"], lay["z_plane_bottom"], 0), occ.addPoint(lay["r_plane"], lay["z_plane_top"], 0)))
         occ.remove([(2, domain_box)], recursive=True)
         objs = [(2, t) for t, _, _ in base]
         tool_dimtags = [dt for dt, _, _ in tools] + [(1, l) for l in lines]

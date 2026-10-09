@@ -37,7 +37,7 @@ def bump():
 
 
 def set_model(m):
-    S.ax_model = copy.deepcopy(m)
+    S.ax_model = fa.complete(copy.deepcopy(m))
     bump()
     S.ax_mesh = None
     S.pop("ax_view_dir", None)
@@ -59,9 +59,8 @@ def rename(model, old, new):
 
 
 def mesh_range(model):
-    a = fa.wavelength_range(model, "resonance")
-    b = fa.wavelength_range(model, "emitter")
-    return min(a[0], b[0]), max(a[1], b[1])
+    rs = [fa.wavelength_range(model, t) for t in ("resonance", "emitter", "scattering")]
+    return min(r[0] for r in rs), max(r[1] for r in rs)
 
 
 def mesh_task(model):
@@ -72,6 +71,7 @@ def mesh_task(model):
 def signature(model, ms):
     keep = {k: model[k] for k in ("materials", "background", "substrate", "parts", "domain")}
     keep["emitter"] = {k: model["emitter"][k] for k in ("z_nm", "sigma_nm")}
+    keep["scattering"] = model["scattering"]["sweep"]
     return json.dumps([keep, ms, mesh_range(model)], sort_keys=True, default=str)
 
 
@@ -128,12 +128,13 @@ def _add(kind):
 def render(ctx):
     """ctx: py, repo, work (Path), threads, lib, FEATS."""
     init()
+    fa.complete(S.ax_model)
     model, ver = S.ax_model, S.ax_ver
     work = Path(ctx["work"]) / "axi"
     st.title("FEM-Modellwerkstatt: Rotationskörper")
-    st.caption("Resonatoren und Emitter mit Rotationssymmetrie um die z-Achse (Mikrosäulen, Kugeln, Scheiben, Ringe): jede Azimutordnung m ist ein "
-               "2D-Problem in der Meridianebene (r, z). Resonanzen (komplexe Frequenz, Güte Q) und Emission eines Dipols auf der Achse "
-               "(Purcell-Faktor, Abstrahlung nach oben und unten).")
+    st.caption("Resonatoren, Emitter und Partikel mit Rotationssymmetrie um die z-Achse (Mikrosäulen, Kugeln, Scheiben, Ringe): jede Azimutordnung m "
+               "ist ein 2D-Problem in der Meridianebene (r, z). Resonanzen (komplexe Frequenz, Güte Q), Emission eines Dipols auf der Achse "
+               "(Purcell-Faktor, Abstrahlung, Modenzerlegung) und Streuung ebener Wellen (Querschnitte, Streudiagramm, Nahfeld).")
     t1, t2, t3, t4, t5 = st.tabs(["1 Modell", "2 Netz", "3 Rechnung", "4 Ergebnisse", "5 Info"])
     with t1:
         tab_model(model, ver)
@@ -248,6 +249,28 @@ def tab_model(model, ver):
         else:
             sw["linewidths"] = float(c[1].number_input("± Linienbreiten λ/Q", 0.1, 50.0, float(sw.get("linewidths", 1.5)), 0.5, key=f"ax_swl_{ver}"))
         sw["n"] = int(c[3].number_input("Punkte", 1, 400, int(sw["n"]), key=f"ax_swn_{ver}"))
+        em["modal"] = st.checkbox("Zusätzlich Modenzerlegung (Riesz-Projektion): Anteil der Resonanz und Hintergrund am Purcell-Faktor",
+                                  value=bool(em.get("modal")) and sw["mode"] == "resonance", disabled=sw["mode"] != "resonance", key=f"ax_modal_{ver}",
+                                  help="Schreibt das Spektrum als Summe über die Quasi-Normalmoden der Resonanzsuche (hpfem.AxisymmetricRieszProjection, "
+                                       "PML bei der Zielwellenlänge eingefroren). Braucht das Spektrum „um die Resonanz“. Teuer: etwa 16 Faktorisierungen je Pol "
+                                       "und 40 für den Hintergrund (Mikrosäule, schnell, p = 2: etwa 15 min). Die Summe folgt der direkten Rechnung "
+                                       "auf wenige Prozent.")
+
+        st.subheader("Ebene Welle (Streuung an Partikeln)")
+        sc = model["scattering"]
+        c = st.columns(4)
+        sc["theta_deg"] = float(c[0].number_input("Einfallswinkel θ gegen +z (°)", 0.0, 180.0, float(sc["theta_deg"]), 5.0, key=f"ax_sc_th_{ver}",
+                                                  help="0°: entlang der Achse (nur m = ±1 nötig); schräg: die Welle zerfällt in die Ordnungen m = 0, ±1, ±2 …"))
+        sc["pol"] = c[1].selectbox("Polarisation", ["S", "P"], index=["S", "P"].index(sc["pol"]), key=f"ax_sc_pol_{ver}",
+                                   format_func={"S": "S (E entlang y, senkrecht zur Einfallsebene)", "P": "P (E in der Einfallsebene x-z)"}.get)
+        sc["max_order"] = int(c[2].number_input("höchste Ordnung |m|", 1, 60, int(sc["max_order"]), key=f"ax_sc_m_{ver}",
+                                                help="Die Summe stoppt früher, wenn das Paar ±m weniger als 10⁻⁵ der Streuleistung trägt. Faustregel: k·R + 4."))
+        c[3].caption("Die Welle läuft in Richtung (sin θ, 0, cos θ) durch die Umgebung; nur ohne Substrat.")
+        c = st.columns(3)
+        ssw = sc["sweep"]
+        ssw["start"] = float(c[0].number_input("λ von (nm)", value=float(ssw["start"]), format="%.6g", key=f"ax_sc_a_{ver}"))
+        ssw["stop"] = float(c[1].number_input("λ bis (nm)", value=float(ssw["stop"]), format="%.6g", key=f"ax_sc_b_{ver}"))
+        ssw["n"] = int(c[2].number_input("Punkte ", 1, 400, int(ssw["n"]), key=f"ax_sc_n_{ver}"))
 
         st.subheader("Rechengebiet")
         lam_hi = mesh_range(model)[1]
@@ -341,16 +364,17 @@ def tab_mesh(model, work):
 def tab_run(model, work, ctx):
     sv = S.ax_solver
     TASKS = {"resonance": "Resonanzen (Eigenmoden der Ordnung m, Güte Q, Modenfelder)",
-             "emitter": "Emitter: Purcell-Faktor und Abstrahlung über der Wellenlänge"}
+             "emitter": "Emitter: Purcell-Faktor und Abstrahlung über der Wellenlänge",
+             "scattering": "Streuung einer ebenen Welle: Querschnitte, Streudiagramm, Nahfeld"}
     S.ax_task = st.radio("Aufgabe", list(TASKS), index=list(TASKS).index(S.ax_task), format_func=TASKS.get, key="ax_task_pick")
     c = st.columns(4)
     sv["order"] = int(c[0].slider("Polynomordnung p", 1, 6, int(sv["order"]), key="ax_p",
                                   help="p = 2 für schnelle Übersichten (Resonanzlage und Q schon gut), p = 3 für Purcell-Faktor und β: an der Mikrosäule liegt "
-                                       "F_P mit p = 2 etwa 10 % zu niedrig, mit p = 3 auf etwa 1,5 % am feinsten Vergleichswert."))
+                                       "F_P mit p = 2 etwa 4 % zu hoch, mit p = 3 auf etwa 1 % am feinsten Vergleichswert."))
     B = ["AUTO", "SPARSE_LU", "MUMPS", "CUDSS"]
     sv["backend"] = c[1].selectbox("Löser (direkt)", B, index=B.index(sv["backend"]) if sv["backend"] in B else 0, key="ax_backend")
     sv["fields"] = c[2].checkbox("Felder speichern", value=bool(sv["fields"]), key="ax_fields",
-                                 help="Resonanzen: das Feld jeder Mode; Emitter: das Feld in der Mitte des Spektrums.")
+                                 help="Resonanzen: das Feld jeder Mode; Emitter und Streuung: das Feld in der Mitte des Spektrums.")
     sv["subdivisions"] = int(c[3].slider("Unterteilung je Dreieck", 1, 4, int(sv["subdivisions"]), key="ax_sub",
                                          help="Feldkarten exakt auf den unterteilten Elementen; 2 genügt für p ≤ 3."))
     errs = [t for lvl, t in fa.validate(model, S.ax_task) if lvl == "error"]
@@ -367,8 +391,9 @@ def tab_run(model, work, ctx):
         st.warning("hpfem lässt sich im eingestellten Python nicht laden (Seitenleiste).")
     if mesh_ok:
         dofs = fa.est_dofs(mesh["stats"]["cells"], sv["order"])
-        n = 1 if S.ax_task == "resonance" else int(model["emitter"]["sweep"]["n"])
-        st.caption(f"Etwa {dofs:,} Freiheitsgrade je Lösung".replace(",", ".") + (f", {n} Wellenlängen" if S.ax_task == "emitter" else "") +
+        n = {"resonance": 1, "emitter": int(model["emitter"]["sweep"]["n"]), "scattering": int(model["scattering"]["sweep"]["n"])}[S.ax_task]
+        st.caption(f"Etwa {dofs:,} Freiheitsgrade je Lösung".replace(",", ".") + (f", {n} Wellenlängen" if S.ax_task != "resonance" else "") +
+                   (", je Wellenlänge eine Lösung pro Azimutordnung" if S.ax_task == "scattering" else "") +
                    (" plus eine Resonanzsuche" if S.ax_task == "emitter" and model["emitter"]["sweep"]["mode"] == "resonance" else "") + ".")
     if st.button("Rechnung starten", type="primary", key="ax_run_btn", disabled=bool(errs) or not mesh_ok):
         try:
@@ -414,7 +439,7 @@ def tab_results(work):
         shutil.copytree(view, arch / name_arch, dirs_exist_ok=True)
         st.success(f"Gespeichert unter {arch / name_arch}")
     vi = meta.get("version_info") or {}
-    st.caption(f"{meta['model']} · {'Resonanzen' if meta['task'] == 'resonance' else 'Emitter'} · p = {meta['order']} · {meta['cells']} Dreiecke · "
+    st.caption(f"{meta['model']} · {dict(resonance='Resonanzen', emitter='Emitter', scattering='Streuung')[meta['task']]} · p = {meta['order']} · {meta['cells']} Dreiecke · "
                f"{meta['dofs']:,} Freiheitsgrade · Start {meta['started']}".replace(",", ".") + (f" · hpfem {vi['hpfem']}" if vi.get("hpfem") else ""))
     if res.get("error"):
         st.error(res["error"])
@@ -446,6 +471,8 @@ def tab_results(work):
                 lab = {f.name: f"Mode {f.stem.split('_')[1]}: λ = {next(md['lam_nm'] for md in modes if md['k'] == int(f.stem.split('_')[1])):.3f} nm, "
                                f"Q = {next(md['Q'] for md in modes if md['k'] == int(f.stem.split('_')[1])):.4g}" for f in files}
                 field_view(view, list(lab), lab.get, rmodel, "ax_mode")
+    elif meta["task"] == "scattering":
+        scattering_results(view, res, rmodel)
     else:
         pts = res.get("points", [])
         ok = [p for p in pts if "error" not in p]
@@ -456,7 +483,18 @@ def tab_results(work):
         if chosen:
             st.info(f"Resonanz (m = {rsn['m']}): λ = {chosen['lam_nm']:.3f} nm, Q = {chosen['Q']:.4g}, Linienbreite {chosen['lam_nm'] / chosen['Q']:.3f} nm. "
                     "Das Spektrum liegt symmetrisch darum.")
-        sub = st.tabs(["Purcell und Abstrahlung", "Feld", "Tabelle und Export"])
+        has_modal = any(p.get("modal") for p in ok)
+        sub = st.tabs(["Purcell und Abstrahlung", "Feld", "Tabelle und Export"] + (["Modenzerlegung"] if has_modal else []))
+        if has_modal:
+            with sub[3]:
+                ui.show_fig(fa.fig_modal(ok, chosen), "modenzerlegung.png", "ax_dl_modal")
+                info = (rsn or {}).get("modal") or {}
+                st.caption("Riesz-Projektion (hpfem.AxisymmetricRieszProjection): das Spektrum als Summe über die Quasi-Normalmoden der Resonanzsuche; die "
+                           "Anteile summieren sich exakt zur Gesamtleistung. Unterschiede zur direkten Rechnung kommen von der bei der Zielwellenlänge "
+                           "eingefrorenen PML (wenige Prozent). " + (f"{info.get('poles')} Pole im Hintergrundkontur, Konvergenz (Halbregel) "
+                                                                     f"{info.get('convergence', 0):.1e}, {info.get('time_s', 0):.0f} s." if info else ""))
+                ui.table_show(pd.DataFrame([{"λ (nm)": p["lam_nm"], "F_P direkt": p["purcell"], "F_P modal": p["modal"]["total"],
+                                             "Resonanz": p["modal"]["mode"], "Hintergrund": p["modal"]["background"]} for p in ok if p.get("modal")]))
         with sub[0]:
             if ok:
                 ui.show_fig(fa.fig_purcell(ok, chosen), "purcell.png", "ax_dl_purcell")
@@ -491,6 +529,68 @@ def tab_results(work):
             ui.table_show(df)
             st.download_button("Spektrum (CSV)", ui.csv_bytes(df), file_name="purcell.csv", mime="text/csv", key="ax_dl_csv")
             st.caption(f"Ordner: {view}")
+
+
+def scattering_results(view, res, model):
+    pts = res.get("points", [])
+    ok = [p for p in pts if "error" not in p]
+    for p in pts:
+        if "error" in p:
+            st.error(f"λ = {p['lam_nm']:.3f} nm: {p['error']}")
+    if not ok:
+        st.info("Keine auswertbaren Punkte.")
+        return
+    R = fa.layout(model)["r_struct"]
+    sc = model["scattering"]
+    sub = st.tabs(["Querschnitte", "Streudiagramm", "Nahfeld", "Tabelle und Export"])
+    with sub[0]:
+        ui.show_fig(fa.fig_cross_sections(ok, np.pi * R ** 2 if R > 0 else None, sc["theta_deg"], sc["pol"]), "querschnitte.png", "ax_dl_cs")
+        if all(p.get("mie") for p in ok):
+            dev = max(abs(p["sigma_ext"] - p["mie"]["sigma_ext"]) / max(p["mie"]["sigma_ext"], 1e-30) for p in ok)
+            dsc = max(abs(p["sigma_sca"] - p["mie"]["sigma_sca"]) / max(p["mie"]["sigma_sca"], 1e-30) for p in ok)
+            (st.success if max(dev, dsc) < 1e-2 else st.warning)(
+                f"Einzelne Kugel: Vergleich mit der Mie-Reihe, größte relative Abweichung Streuung {dsc:.1e}, Extinktion {dev:.1e}.")
+        st.caption("σ_sca: Leistung des Streufelds durch die geschlossene Messfläche um das Teilchen, geteilt durch die einfallende Intensität "
+                   "n|E₀|²/(2Z₀). σ_ext aus dem optischen Theorem (Fernfeld in Vorwärtsrichtung), σ_abs = σ_ext − σ_sca (bei sehr kleiner Absorption "
+                   "entsprechend ungenauer). Effizienz rechts bezogen auf π R² mit dem größten Radius der Struktur.")
+    with sub[1]:
+        idx = st.selectbox("Wellenlänge", [p["index"] for p in ok], format_func=lambda i: f"{next(q['lam_nm'] for q in ok if q['index'] == i):.2f} nm",
+                           index=int(np.argmax([p["sigma_sca"] for p in ok])), key="ax_pat_pick")
+        pt = next(q for q in ok if q["index"] == idx)
+        ui.show_fig(fa.fig_pattern(pt), f"streudiagramm_{idx}.png", "ax_dl_pat")
+        st.caption("Differentieller Streuquerschnitt dσ/dΩ = |F|² (|E₀| = 1) aus der Summe der Fernfelder aller Ordnungen, in der Einfallsebene (x-z) und "
+                   f"senkrecht dazu (y-z). Gerechnete Ordnungen: {pt['orders']}.")
+    with sub[2]:
+        files = sorted(view.glob("scatter_*.npz"), key=lambda f: int(f.stem.split("_")[1]))
+        if not files:
+            st.info("Kein Nahfeld gespeichert (Reiter 3: „Felder speichern“).")
+        else:
+            c = st.columns(4)
+            pick = c[0].selectbox("Feld", [f.name for f in files], key="ax_sc_pick",
+                                  format_func=lambda n: f"λ = {next((q['lam_nm'] for q in ok if q['index'] == int(n.split('_')[1].split('.')[0])), 0):.2f} nm")
+            q = c[1].selectbox("Größe", list(fa.SCATTER_QUANTITIES), key="ax_sc_q")
+            log = c[2].checkbox("logarithmisch", key="ax_sc_log")
+            zs = c[3].checkbox("nur Struktur", value=True, key="ax_sc_zoom")
+            lay = fa.layout(model)
+            zoom = (lay["r_plane"], lay["z_plane_bottom"], lay["z_plane_top"]) if zs else None
+            ui.show_fig(fa.fig_scatter_field(fa.load_field(view / pick), model, q, log=log, zoom=zoom), f"{Path(pick).stem}.png", "ax_dl_scf")
+            st.caption("Schnitt in der Einfallsebene (y = 0) mit kartesischen Komponenten; rechts x = r (φ = 0), links x = −r (φ = π). Gesamtfeld = "
+                       "Streufeld + einfallende Welle (Pfeil), |E₀| = 1.")
+    with sub[3]:
+        rows = []
+        for p in ok:
+            row = {"λ (nm)": p["lam_nm"], "σ_sca (µm²)": p["sigma_sca"] * 1e12, "σ_abs (µm²)": p["sigma_abs"] * 1e12, "σ_ext (µm²)": p["sigma_ext"] * 1e12}
+            if R > 0:
+                row["Q_ext"] = p["sigma_ext"] / (np.pi * (R * 1e-9) ** 2)
+            if p.get("mie"):
+                row.update({"Mie σ_sca (µm²)": p["mie"]["sigma_sca"] * 1e12, "Mie σ_abs (µm²)": p["mie"]["sigma_abs"] * 1e12,
+                            "Mie σ_ext (µm²)": p["mie"]["sigma_ext"] * 1e12})
+            row.update({"Ordnungen": len(p["orders"]), "Zeit (s)": p["time_s"]})
+            rows.append(row)
+        df = pd.DataFrame(rows)
+        ui.table_show(df)
+        st.download_button("Querschnitte (CSV)", ui.csv_bytes(df), file_name="querschnitte.csv", mime="text/csv", key="ax_dl_cs_csv")
+        st.caption(f"Ordner: {view}")
 
 
 def field_view(view, names, label, model, key, default_log=False):
@@ -529,6 +629,13 @@ muss dort liegen und seine Breite etwa λ/Q betragen.
 **Genauigkeit.** Resonanzwellenlänge und Q konvergieren schnell, der Purcell-Faktor langsamer (er hängt am Feld am Emitter und an der genauen
 Lage der Resonanz). Immer mit p = 2 und p = 3 (oder feinerem Netz) vergleichen. Messwerte für die schnelle Mikrosäule siehe Anleitung.
 
-**Grenzen.** Nur Emitter auf der Achse; die Modenzerlegung des Spektrums (Riesz-Projektion, `AxisymmetricRieszProjection`) und Streuung ebener
-Wellen an Partikeln (Querschnitte) folgen in einem weiteren Schritt.
+**Streuung.** Eine ebene Welle aus der Umgebung unter dem Winkel θ gegen die Achse zerfällt in Azimutordnungen m = 0, ±1, ±2 … (Jacobi-Anger);
+jede wird einzeln gelöst (Streufeld-Formulierung), bis das Paar ±m vernachlässigbar wenig streut. σ_sca aus dem Fluss durch eine geschlossene
+Messfläche, σ_ext aus dem optischen Theorem, σ_abs als Differenz; Streudiagramm aus der Summe der Fernfelder; Nahfeld in der Einfallsebene. Für eine
+einzelne Kugel zeigt die App die Mie-Reihe zum Vergleich. Geht nur in homogener Umgebung (kein Substrat).
+
+**Modenzerlegung.** Mit der Riesz-Projektion wird das Purcell-Spektrum als Summe über die Quasi-Normalmoden geschrieben: der Beitrag der Resonanz
+(eine Lorentz-Kurve) und ein glatter Hintergrund (übrige Moden, Kontinuum).
+
+**Grenzen.** Emitter nur auf der Achse; Streuung nur ohne Substrat. Dipole in periodischen Strukturen folgen, wenn hp-FEM sie anbietet.
 """)
