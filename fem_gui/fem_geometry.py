@@ -8,7 +8,7 @@ shape covers earlier shapes and the layers.
 Vertical layout (bottom to top): [PML below | PEC wall] substrate | layers | cover | PML above. The mesh is conforming: every interface of the
 stack and every shape boundary is a mesh line. Physical groups for the hpfem Gmsh reader (MSH 4.1 ASCII):
     surfaces: tag = 1 + index of the material in model["materials"]   (name = material name)
-    curves:   left = 101, right = 102 (periodic pair), bottom = 103, top = 104
+    curves:   left = 1, right = 2 (periodic pair), bottom = 3, top = 4  (hpfem.box_tag, as hpfem.grating expects)
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import numpy as np
 
 import fem_materials as fm
 
-TAG_LEFT, TAG_RIGHT, TAG_BOTTOM, TAG_TOP = 101, 102, 103, 104
+TAG_LEFT, TAG_RIGHT, TAG_BOTTOM, TAG_TOP = 1, 2, 3, 4                  # hpfem.box_tag X_MIN, X_MAX, Y_MIN, Y_MAX (grating.solve)
 
 SHAPE_TYPES = {
     "rect": ("Rechteck", [("x_center", "Mitte x (nm)"), ("y_bottom", "Unterkante y (nm)"), ("width", "Breite (nm)"), ("height", "Höhe (nm)")]),

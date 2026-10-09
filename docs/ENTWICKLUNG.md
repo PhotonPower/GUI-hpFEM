@@ -11,7 +11,7 @@ Unter Linux braucht Gmsh Systembibliotheken (`libglu1-mesa libxrender1 libxcurso
 
 ## Tests
 
-`pytest` prüft Materialien, Modell/Vorlagen, Job-/Log-Auswertung und dass alle Dateien zusammenpassen. Es sind keine hpfem-Rechnungen enthalten. Ein Rechentest gegen die Referenzwerte der Anleitung (Ag-Lamellengitter, R₀ = 0,7800, R₋₁ = 0,0801) gehört in eine Umgebung mit gebautem hpfem und ist noch nicht automatisiert.
+`pytest` prüft Materialien, Modell/Vorlagen, Job-/Log-Auswertung (Phasen, Speicherschätzung, Meldungen, Abbruch), PYTHONPATH-Regel, die Hilfsfunktionen des Workers, die Auswertung der neuen Ergebnisse (H/S, Ableitungen, Resonanzen, Bilanz) und dass alle Dateien zusammenpassen. Es sind keine hpfem-Rechnungen enthalten. Ein Rechentest gegen die Referenzwerte der Anleitung (Ag-Lamellengitter, R₀ = 0,7800, R₋₁ = 0,0801) gehört in eine Umgebung mit gebautem hpfem und ist noch nicht automatisiert.
 
 ## Neue Vorlage anlegen
 
