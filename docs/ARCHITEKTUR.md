@@ -22,6 +22,10 @@
 | `fem_materials.py` | Optische Konstanten ohne hpfem: Bibliothek (CSV aus `python/hpfem/data` und Sellmeier), n+ik, ε, Drude, Tabelle. Gleiche Werte wie `hpfem.materials`. |
 | `fem_run.py` | Durchlaufwerte, Job-Datei, Start des Workers als Hintergrundprozess (PYTHONPATH nur für einen Quell-Build mit gebautem Modul), Abbruchdatei, Prüflauf (`--check`), Bibliotheksprüfung (Version, Funktionen), Log- und Fortschrittsauswertung. |
 | `fem_worker.py` | Läuft im hpfem-Python. Liest `job.json` und `mesh.msh`, rechnet je Durchlaufpunkt (Streuung oder Resonanzen), schreibt Ergebnisse nach jedem Punkt. Mit `--check` nur Prüfungen und Speicherschätzung. |
+| `fem_ui.py` | Gemeinsame Streamlit-Bausteine beider Modi (Materialeditor, Tabellen, Bilder mit Download, CSV). |
+| `fem_axi.py` | Rotationskörper ohne hpfem: Modell (Teile im Querschnitt r ≥ 0, z; Substrat; Emitter; Resonanzsuche), Vorlagen (Mikrosäule, Kugel, Au-Nanokugel, Mikroscheibe), DBR-Generator, Prüfungen, Layout mit PML und Messebenen, Gmsh-Meridiannetz (Achse Tag 90, Wand Tag 91, Emitterkasten 101 + Materialindex), Abbildungen. |
+| `fem_axi_app.py` | Seite des Modus „Rotationskörper“ (fünf Reiter), von `fem_app.py` aufgerufen. |
+| `fem_axi_worker.py` | Läuft im hpfem-Python: `AxisymmetricResonance` (Moden der Ordnung m) bzw. `AxisymmetricScattering` mit `axisymmetric_gaussian_dipole` (Purcell-Faktor über `axisymmetric_poynting_flux` durch die Fläche um den Emitterkasten, β durch die Messebenen); Felder über `FieldExporter2D` (ASCII-VTU) als `mode_<k>.npz` / `field_<i>.npz`. |
 | `fem_post.py` | Ergebnistabelle, abgeleitete Felder (|E|, Q, |H|, S), Ableitungen, Resonanzen, Bilanz, Zeit, alle Abbildungen. |
 
 ## Schnittstelle App ↔ Worker

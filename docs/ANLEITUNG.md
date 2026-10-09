@@ -76,6 +76,39 @@ Die Residuen-Adaptivität des konischen Lösers erreicht also das Niveau der Ref
 (hp-FEM, validation.md E: ΔR₋₁ = −5·10⁻⁶ bei 88 k Freiheitsgraden).
 
 
+## Rotationskörper: Resonatoren und Emitter (Seitenleiste „Art des Modells“)
+Für Strukturen mit Rotationssymmetrie um die z-Achse rechnet die App jede Azimutordnung m als 2D-Problem in der Meridianebene (r ≥ 0, z). Ablauf wie
+im periodischen Modus in fünf Reitern:
+1. **Modell:** Materialien, Umgebung (verlustfrei) und optional ein Substrat (Halbraum z < 0); Teile im Querschnitt: Zylinder/Scheibe/Ring, Kegelstumpf,
+   Kugel, Rotationsellipsoid, Torus, Polygon (später überdeckt früher). **Generator „Mikrosäule mit Bragg-Spiegeln“**: Entwurfswellenlänge, Radius, Paare
+   oben/unten, Materialien, Kavitätslänge; setzt den Emitter in die Kavitätsmitte. **Resonanzsuche:** Zielwellenlänge, Azimutordnung m, Anzahl Moden.
+   **Emitter:** Position z auf der Achse, Richtung (senkrecht zur Achse: m = ±1; entlang: m = 0), Ausdehnung σ, Spektrum fest oder „um die Resonanz“
+   (± Linienbreiten λ/Q). **Rechengebiet:** Abstand zur PML und PML-Dicke („Vorschlag“: 0,75 λ und 1,5 λ). Rechts: Querschnitt (gespiegelt), PML,
+   Messebenen, Emitter.
+2. **Netz:** Gmsh in der Meridianebene, Verfeinerung an Grenzflächen und um den Emitter (Kasten 4σ), gekrümmte Elemente für runde Teile.
+3. **Rechnung:** Aufgabe „Resonanzen“ oder „Emitter“, Polynomordnung p (2 für Übersichten, 3 für genaue Werte), Felder speichern.
+4. **Ergebnisse:** Resonanzen: λ_res und Q (Diagramm, Tabelle, CSV), Modenfelder (|E|, Komponenten E_r, E_φ, E_z; als Schnitt durch die Achse
+   gespiegelt). Emitter: Purcell-Faktor und Anteile nach oben (β) und unten über der Wellenlänge, die gefundene Resonanz, das Feld in der Mitte des
+   Spektrums.
+
+**Test mit der Vorlage „Mikrosäule … (schnell)“** (wie das Beispiel `examples/micropillar_qd` von hp-FEM, GaAs/AlAs mit n = 3,53 / 2,95, r = 0,75 µm,
+6/10 Paare): Reiter 2 mit 4 Elementen pro Wellenlänge, Reiter 3 „Resonanzen“ mit p = 2: Grundmode (m = 1) bei etwa **930,5 nm, Q ≈ 170** (p = 3: 930,6 nm,
+Q ≈ 172). Dann „Emitter“ mit Spektrum „um die Resonanz“: das Maximum des Purcell-Faktors liegt auf der Resonanz, die Breite ist etwa λ/Q.
+**Gemessen (hpfem `main` 1c50a5b, 9.10.2026)**, Purcell-Faktor und β jeweils genau an der eigenen Resonanz:
+
+| Rechnung | λ_res | Q | F_P | β oben |
+|---|---|---|---|---|
+| GUI, 4 Elemente/λ, p = 2 | 930,47 nm | 170 | 1,76 | 0,32 |
+| GUI, 4 Elemente/λ, p = 3 | 930,65 nm | 172,1 | 1,96 | 0,296 |
+| Beispiel von hp-FEM, strukturiertes Netz 0,05 λ, p = 3 | 930,65 nm | 172,1 | 1,99 | 0,291 |
+| Beispiel von hp-FEM, schnelle Einstellung (0,1 λ, p = 2) | 930,15 nm | 171 | 2,33 | 0,24 |
+
+Resonanz und Q konvergieren schnell, der Purcell-Faktor langsamer: **für F_P und β mit p = 3 rechnen** (p = 2 liegt etwa 10 % daneben). Der Wert
+2,33 der README von hp-FEM gehört zur groben Schnelleinstellung und ist nicht konvergiert.
+
+**Emitter auf der Achse** koppeln nur an m = 0 (axial) und m = ±1 (senkrecht). Flüstergalerie-Moden (große m) einer Scheibe sind deshalb nur als
+Resonanzen zugänglich (Vorlage „Mikroscheibe“, m = 12 bei etwa 975 nm).
+
 ## Ableitungen (Reiter 3 → Reiter 4 „Ableitungen“)
 Mit dem Löser „hpfem.grating“ und „Ableitungen berechnen“ berechnet die Bibliothek (`hpfem.grating.jacobian`, M16) die Jacobi-Matrix aller
 Beugungseffizienzen nach Re ε und Im ε jedes Materials in der Zelle (Formen und Schichten, nicht Einfallsmedium und Substrat), nach der Wellenlänge

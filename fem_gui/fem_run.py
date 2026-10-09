@@ -76,15 +76,16 @@ def _cwd(repo, folder):
     return str(repo) if repo and Path(repo).is_dir() else str(folder)
 
 
-def start_worker(py, repo, folder, threads=0):
-    """Starts fem_worker.py in the background; returns the process. Output goes to <folder>/log.txt."""
+def start_worker(py, repo, folder, threads=0, script="fem_worker.py"):
+    """Starts the worker script (fem_worker.py, or fem_axi_worker.py for bodies of revolution) in the background; returns the process. Output
+    goes to <folder>/log.txt."""
     folder = Path(folder)
-    for pattern in ("results.json", "maps_*.npz", "tri_*.npz", "hpmesh_*.npz", "mode_*.npz", "cancel"):
+    for pattern in ("results.json", "maps_*.npz", "tri_*.npz", "hpmesh_*.npz", "mode_*.npz", "field_*.npz", "cancel"):
         for f in folder.glob(pattern):
             f.unlink()
     log = open(folder / "log.txt", "w", encoding="utf-8")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return subprocess.Popen([str(py), str(HERE / "fem_worker.py"), str(folder)], cwd=_cwd(repo, folder), env=worker_env(repo, threads), stdout=log,
+    return subprocess.Popen([str(py), str(HERE / script), str(folder)], cwd=_cwd(repo, folder), env=worker_env(repo, threads), stdout=log,
                             stderr=subprocess.STDOUT, creationflags=flags)
 
 
@@ -184,7 +185,7 @@ def progress_info(text):
         return 0.0, "Netz wird gelesen, Solver startet …"
     if "\nDONE" in text or text.strip().endswith("DONE"):
         return 1.0, "fertig"
-    frac, label = (done - 1) / total, f"Punkt {done} von {total}"
+    frac, label = max(done - 1, 0) / total, (f"Punkt {done} von {total}" if done else "Vorbereitung (Resonanzsuche)")
     steps = list(re.finditer(r"STEP (\d+)/(\d+)", text))
     last_prog = [m.start() for m in re.finditer(r"PROGRESS \d+/\d+", text)][-1]
     if steps and steps[-1].start() > last_prog:

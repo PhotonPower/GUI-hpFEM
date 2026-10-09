@@ -24,6 +24,8 @@ import fem_geometry as fg  # noqa: E402
 import fem_materials as fm  # noqa: E402
 import fem_post as fp  # noqa: E402
 import fem_run as fr  # noqa: E402
+import fem_ui as ui  # noqa: E402
+import fem_axi_app  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 S = st.session_state
@@ -45,6 +47,9 @@ _old = [f"{name}: fehlt {', '.join(miss)}" for name, (mod, names) in _REQUIRED.i
 _worker = HERE / "fem_worker.py"
 if _worker.is_file():
     _wtext = _worker.read_text(encoding="utf-8", errors="replace")
+    for _f in ("fem_axi.py", "fem_axi_worker.py", "fem_axi_app.py", "fem_ui.py"):
+        if not (HERE / _f).is_file():
+            _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
     _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml", "GratingRun", "adaptive_grating_point",
                           "resonance_point", "check_job", "jacobian_data") if k not in _wtext]
     if _wmiss:
@@ -56,36 +61,13 @@ if _old:
     st.caption(f"Ordner: {HERE}. Zusammengehörig sind fem_app.py, fem_geometry.py, fem_materials.py, fem_post.py, fem_run.py und fem_worker.py.")
     st.stop()
 
-TYPE_LABELS = {"library": "Bibliothek (hpfem)", "index": "n + ik (konstant)", "eps": "ε (konstant)", "drude": "Drude-Metall", "table": "Tabelle λ, n, k"}
-LIB_CHOICES = ["Si", "Ag", "Au", "Al", "GaAs", "MAPbI3", "SiO2", "TiO2", "water", "air", "vacuum"]
-DEFAULT_SPEC = {"library": {"type": "library", "name": "SiO2"}, "index": {"type": "index", "n": 1.5, "k": 0.0},
-                "eps": {"type": "eps", "re": 2.25, "im": 0.0}, "drude": {"type": "drude", "eps_inf": 1.0, "omega_p_eV": 9.0, "gamma_eV": 0.07},
-                "table": {"type": "table", "rows": [[400.0, 1.5, 0.0], [800.0, 1.5, 0.0]]}}
 ENGINE_SHORT = {"grating": "hpfem.grating", "grating_hp": "hpfem.grating, hp-adaptiv", "conical": "konischer Löser (klassisch)",
                 "inplane": "In-Ebenen-Löser", "inplane_hp": "In-Ebenen-Löser, hp-adaptiv"}
 SWEEP_MODES = {"none": "kein Durchlauf (ein Punkt)", "wavelength": "Wellenlänge", "theta": "Einfallswinkel θ", "phi": "Azimut φ (konisch)"}
 
 
 # ------------------------------------------------------------------------------------------------------------------- helpers
-def table_show(obj):
-    try:
-        st.dataframe(obj, width="stretch", hide_index=True)
-    except Exception:
-        st.dataframe(obj, use_container_width=True, hide_index=True)
-
-
-def show_fig(fig, name, key):
-    import matplotlib.pyplot as plt
-
-    st.pyplot(fig)
-    b = io.BytesIO()
-    fig.savefig(b, format="png", dpi=150, bbox_inches="tight")
-    st.download_button("Bild herunterladen (PNG)", b.getvalue(), file_name=name, mime="image/png", key=key)
-    plt.close(fig)
-
-
-def csv_bytes(df):
-    return df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+table_show, show_fig, csv_bytes, unique_name = ui.table_show, ui.show_fig, ui.csv_bytes, ui.unique_name
 
 
 def next_uid():
@@ -207,13 +189,6 @@ def add_layer():
     S.model["layers"].append(dict(material=next((n for n in names if n != S.model["cover"]), names[0]), thickness_nm=100.0, uid=next_uid()))
 
 
-def unique_name(model, base):
-    n, k = base, 2
-    while n in model["materials"]:
-        n, k = f"{base} {k}", k + 1
-    return n
-
-
 # --------------------------------------------------------------------------------------------------------------------- state
 init_state()
 model = S.model
@@ -221,24 +196,31 @@ ver = S.ver
 
 # ------------------------------------------------------------------------------------------------------------------ sidebar
 st.sidebar.title("FEM-Modellwerkstatt")
-presets = fg.presets()
-choice = st.sidebar.selectbox("Vorlage", ["– auswählen –"] + list(presets), key="preset_choice",
-                              help="Beispielmodelle zum Ausprobieren und als Ausgangspunkt für eigene Modelle.")
-if st.sidebar.button("Vorlage laden", key="load_preset", disabled=choice.startswith("–")):
-    set_model(presets[choice])
-    S.mesh_sig = None
-    st.rerun()
-up = st.sidebar.file_uploader("Modell laden (JSON)", type=["json"], key="model_upload")
-if up is not None and S.get("loaded_upload") != (up.name, up.size):
-    try:
-        set_model(fg.load_model(up.getvalue().decode("utf-8")))
-        S.loaded_upload = (up.name, up.size)
+MODES = {"periodic": "Periodische Struktur (Gitter, Metaoberfläche)", "axi": "Rotationskörper: Resonator, Emitter"}
+app_mode = st.sidebar.radio("Art des Modells", list(MODES), format_func=MODES.get, key="app_mode",
+                            help="Periodisch: Elementarzelle mit Bloch-Rändern, ebene Welle (Streuung, Beugung). Rotationskörper: Struktur mit "
+                                 "Rotationssymmetrie um z (Mikrosäule, Kugel, Scheibe), Resonanzen und Emission eines Dipols.")
+if app_mode == "axi":
+    fem_axi_app.sidebar_model()
+else:
+    presets = fg.presets()
+    choice = st.sidebar.selectbox("Vorlage", ["– auswählen –"] + list(presets), key="preset_choice",
+                                  help="Beispielmodelle zum Ausprobieren und als Ausgangspunkt für eigene Modelle.")
+    if st.sidebar.button("Vorlage laden", key="load_preset", disabled=choice.startswith("–")):
+        set_model(presets[choice])
         S.mesh_sig = None
         st.rerun()
-    except Exception as exc:
-        st.sidebar.error(f"Datei nicht lesbar: {exc}")
-st.sidebar.download_button("Modell speichern (JSON)", json.dumps(clean(model), indent=1, ensure_ascii=False).encode("utf-8"),
-                           file_name="modell.json", mime="application/json", key="save_model")
+    up = st.sidebar.file_uploader("Modell laden (JSON)", type=["json"], key="model_upload")
+    if up is not None and S.get("loaded_upload") != (up.name, up.size):
+        try:
+            set_model(fg.load_model(up.getvalue().decode("utf-8")))
+            S.loaded_upload = (up.name, up.size)
+            S.mesh_sig = None
+            st.rerun()
+        except Exception as exc:
+            st.sidebar.error(f"Datei nicht lesbar: {exc}")
+    st.sidebar.download_button("Modell speichern (JSON)", json.dumps(clean(model), indent=1, ensure_ascii=False).encode("utf-8"),
+                               file_name="modell.json", mime="application/json", key="save_model")
 st.sidebar.divider()
 st.sidebar.subheader("Rechner")
 py = st.sidebar.text_input("Python mit hpfem", value=fr.default_python(), key="solver_py",
@@ -316,7 +298,7 @@ if proc is not None:
             if c2.button("Sofort beenden", key="kill_run", help="Beendet den Prozess hart; der laufende Punkt geht verloren."):
                 proc.terminate()
                 S.run_proc, S.run_msg, S.cancel_requested = None, "Rechnung beendet (bis dahin berechnete Punkte stehen unter Ergebnisse).", False
-                S.view_dir = S.run_dir
+                S[("ax_view_dir" if S.get("run_kind") == "axi" else "view_dir")] = S.run_dir
                 st.rerun()
         elif c1.button("Abbrechen", key="cancel_run",
                        help="Der Löser hält zwischen zwei Phasen (Assemblierung, Faktorisierung, Lösen) bzw. zwischen zwei Punkten an; alles bis dahin Berechnete bleibt."):
@@ -329,7 +311,7 @@ if proc is not None:
         flags = fr.log_flags(log)
         code = proc.returncode
         S.run_proc, S.cancel_requested = None, False
-        S.view_dir = S.run_dir
+        S[("ax_view_dir" if S.get("run_kind") == "axi" else "view_dir")] = S.run_dir
         if flags["cancelled"]:
             S.run_msg = "Rechnung abgebrochen (bis dahin berechnete Punkte stehen unter Ergebnisse)."
         else:
@@ -337,6 +319,11 @@ if proc is not None:
                          f"Beendet mit Code {code}" + (f", {len(flags['errors'])} Fehlermeldung(en)." if flags["errors"] else "."))
         S.run_ok = code == 0 and not flags["errors"]
         st.rerun()
+    st.stop()
+
+# ------------------------------------------------------------------------------------------------- body of revolution mode
+if app_mode == "axi":
+    fem_axi_app.render(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
     st.stop()
 
 # ------------------------------------------------------------------------------------------------------------------ tabs
@@ -372,81 +359,11 @@ with t_model:
 
         # ---------------------------------------------------------------- materials
         st.subheader("Materialien")
-        for name in list(model["materials"]):
-            spec = model["materials"][name]
-            with st.expander(f"{name}: {fm.describe(spec)}"):
-                c1, c2 = st.columns(2)
-                newname = c1.text_input("Name", value=name, key=f"mn_{ver}_{name}")
-                typ = c2.selectbox("Typ", list(TYPE_LABELS), index=list(TYPE_LABELS).index(spec["type"]), format_func=TYPE_LABELS.get,
-                                   key=f"mt_{ver}_{name}")
-                if typ != spec["type"]:
-                    model["materials"][name] = copy.deepcopy(DEFAULT_SPEC[typ])
-                    S.ver += 1
-                    st.rerun()
-                if typ == "library":
-                    spec["name"] = st.selectbox("Bibliotheksmaterial", list(fm.LIBRARY), index=list(fm.LIBRARY).index(spec["name"]),
-                                                key=f"ml_{ver}_{name}", help="Gemessene Daten (n, k) bzw. Sellmeier-Formel, mit Gültigkeitsbereich.")
-                    r = fm.valid_range(spec)
-                    if r:
-                        st.caption(f"Gültig von {r[0]:.0f} bis {r[1]:.0f} nm.")
-                elif typ == "index":
-                    c1, c2 = st.columns(2)
-                    spec["n"] = float(c1.number_input("n", value=float(spec["n"]), step=0.1, format="%.5g", key=f"mi_n_{ver}_{name}"))
-                    spec["k"] = float(c2.number_input("k (Extinktion, ≥ 0)", value=float(spec["k"]), min_value=0.0, step=0.1, format="%.5g",
-                                                       key=f"mi_k_{ver}_{name}"))
-                elif typ == "eps":
-                    c1, c2 = st.columns(2)
-                    spec["re"] = float(c1.number_input("Re ε", value=float(spec["re"]), step=0.1, format="%.6g", key=f"me_r_{ver}_{name}"))
-                    spec["im"] = float(c2.number_input("Im ε (Verlust > 0)", value=float(spec["im"]), step=0.1, format="%.6g", key=f"me_i_{ver}_{name}",
-                                                        help="Konvention exp(−iωt): Verlust bedeutet Im ε > 0."))
-                elif typ == "drude":
-                    c1, c2, c3 = st.columns(3)
-                    spec["eps_inf"] = float(c1.number_input("ε∞", value=float(spec["eps_inf"]), step=0.1, format="%.5g", key=f"md_e_{ver}_{name}"))
-                    spec["omega_p_eV"] = float(c2.number_input("ħωp (eV)", value=float(spec["omega_p_eV"]), min_value=0.01, step=0.1, format="%.5g",
-                                                                key=f"md_p_{ver}_{name}"))
-                    spec["gamma_eV"] = float(c3.number_input("ħγ (eV)", value=float(spec["gamma_eV"]), min_value=0.0, step=0.01, format="%.5g",
-                                                              key=f"md_g_{ver}_{name}"))
-                else:
-                    txt = st.text_area("Zeilen: Wellenlänge (nm), n, k", value="\n".join(f"{a:g}, {b:g}, {c:g}" for a, b, c in spec["rows"]),
-                                       key=f"mtab_{ver}_{name}", height=120, help="Linear interpoliert, keine Extrapolation.")
-                    try:
-                        rows = [[float(v) for v in line.replace(";", ",").split(",")] for line in txt.splitlines() if line.strip()]
-                        if len(rows) >= 2 and all(len(r) == 3 for r in rows):
-                            spec["rows"] = rows
-                        else:
-                            st.error("Mindestens zwei Zeilen mit je drei Zahlen.")
-                    except ValueError:
-                        st.error("Zahlen nicht lesbar.")
-                lam0 = inc["wavelength_nm"]
-                try:
-                    n_, k_ = fm.nk(spec, lam0)
-                    st.caption(f"bei {lam0:g} nm: n = {n_:.4f}, k = {k_:.4f}, ε = {fm.eps_at(spec, lam0).real:.4f} {fm.eps_at(spec, lam0).imag:+.4f} i")
-                except Exception as exc:
-                    st.caption(f"bei {lam0:g} nm: {exc}")
-                b1, b2 = st.columns(2)
-                if newname != name and newname.strip():
-                    if newname in model["materials"]:
-                        b1.error("Name schon vergeben.")
-                    else:
-                        rename_material(model, name, newname.strip())
-                        S.ver += 1
-                        st.rerun()
-                in_use = name in used_materials(model)
-                if b2.button("Material löschen", key=f"mdel_{ver}_{name}", disabled=in_use or len(model["materials"]) <= 1,
-                             help="Nur möglich, wenn das Material nirgends verwendet wird."):
-                    del model["materials"][name]
-                    S.ver += 1
-                    st.rerun()
-        c1, c2, c3 = st.columns([3, 2, 2])
-        lib_pick = c1.selectbox("Aus der Bibliothek hinzufügen", ["–"] + [n for n in LIB_CHOICES], key=f"libadd_{ver}")
-        if c2.button("Bibliotheksmaterial hinzufügen", key=f"libadd_btn_{ver}", disabled=lib_pick == "–"):
-            model["materials"][unique_name(model, lib_pick)] = {"type": "library", "name": lib_pick}
+
+        def _bump():
             S.ver += 1
-            st.rerun()
-        if c3.button("Eigenes Material hinzufügen", key=f"matadd_{ver}"):
-            model["materials"][unique_name(model, "Material")] = copy.deepcopy(DEFAULT_SPEC["index"])
-            S.ver += 1
-            st.rerun()
+
+        ui.material_editor(model, ver, inc["wavelength_nm"], used_materials(model), rename_material, _bump)
         names = list(model["materials"])
 
         # ---------------------------------------------------------------- stack
@@ -883,11 +800,11 @@ with t_run:
             run_dir = work / "run"
             prepare_job(run_dir)
             S.run_proc = fr.start_worker(py, repo, run_dir, int(threads))
-            S.run_dir, S.run_msg, S.cancel_requested = str(run_dir), "", False
+            S.run_dir, S.run_msg, S.cancel_requested, S.run_kind = str(run_dir), "", False, "periodic"
             st.rerun()
         except Exception as exc:
             st.error(f"Start fehlgeschlagen: {exc}")
-    if S.get("run_msg"):
+    if S.get("run_msg") and S.get("run_kind", "periodic") == "periodic":
         (st.success if S.get("run_ok", True) else st.error)(S.run_msg + " Die Ergebnisse stehen im Reiter 4.")
     if S.get("run_dir") and (Path(S.run_dir) / "log.txt").is_file():
         lw = fr.library_warnings(fr.read_log(S.run_dir))

@@ -19,7 +19,7 @@ In `fem_geometry.presets()` ein Modell-Dict ergänzen. `tests/test_geometry.py` 
 
 ## Neues Material anlegen
 
-Neue Tabelle als CSV `wellenlänge[µm], n, k` in hp-FEM unter `python/hpfem/data` und in `hpfem.materials` registrieren. Danach den Namen in `fem_materials.LIBRARY`, `_TABULATED` bzw. `_SELLMEIER` und in `fem_app.LIB_CHOICES` eintragen.
+Neue Tabelle als CSV `wellenlänge[µm], n, k` in hp-FEM unter `python/hpfem/data` und in `hpfem.materials` registrieren. Danach den Namen in `fem_materials.LIBRARY`, `_TABULATED` bzw. `_SELLMEIER` und in `fem_ui.LIB_CHOICES` eintragen.
 
 ## Versionsprüfung der Dateien
 
