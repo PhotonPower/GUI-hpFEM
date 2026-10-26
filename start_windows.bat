@@ -1,3 +1,7 @@
 @echo off
 cd /d "%~dp0"
-streamlit run fem_gui\fem_app.py
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" -m streamlit run fem_gui\fem_app.py
+) else (
+    streamlit run fem_gui\fem_app.py
+)

@@ -24,6 +24,8 @@ import fem_geometry as fg  # noqa: E402
 import fem_materials as fm  # noqa: E402
 import fem_post as fp  # noqa: E402
 import fem_run as fr  # noqa: E402
+import fem_ui as ui  # noqa: E402
+import fem_axi_app  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 S = st.session_state
@@ -35,15 +37,21 @@ _REQUIRED = {
     "fem_geometry.py": (fg, ["presets", "validate", "layout", "preview_figure", "mesh_figure", "build_mesh", "suggest_domain", "pml_plan", "shift_shapes",
                              "centering_shift", "shapes_x_extent", "material_index_map", "load_model", "new_shape", "parse_points", "shape_polygon", "reader_check"]),
     "fem_post.py": (fp, ["load_results", "results_dataframe", "fig_spectrum", "fig_pscan", "load_map", "derived", "fig_map", "fig_cut", "fig_absorption",
-                         "fig_absorption_sweep", "fig_adaptive_steps", "fig_hpmesh", "load_tri", "derived_tri", "fig_map_tri", "fig_materials"]),
+                         "fig_absorption_sweep", "fig_adaptive_steps", "fig_hpmesh", "load_tri", "derived_tri", "fig_map_tri", "fig_materials",
+                         "available_quantities", "jacobian_dataframe", "fig_jacobian", "resonances_dataframe", "fig_resonances", "timing_dataframe",
+                         "balance_dataframe"]),
     "fem_run.py": (fr, ["sweep_values", "wavelength_range", "make_job", "write_job", "start_worker", "read_log", "progress_info", "log_flags", "library_warnings",
-                        "default_python"]),
+                        "default_python", "probe_library", "run_check", "request_cancel", "estimate_line", "diagnostics_lines"]),
 }
 _old = [f"{name}: fehlt {', '.join(miss)}" for name, (mod, names) in _REQUIRED.items() if (miss := [n for n in names if not hasattr(mod, n)])]
 _worker = HERE / "fem_worker.py"
 if _worker.is_file():
     _wtext = _worker.read_text(encoding="utf-8", errors="replace")
-    _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml") if k not in _wtext]
+    for _f in ("fem_axi.py", "fem_axi_worker.py", "fem_axi_app.py", "fem_ui.py"):
+        if not (HERE / _f).is_file():
+            _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
+    _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml", "GratingRun", "adaptive_grating_point",
+                          "resonance_point", "check_job", "jacobian_data") if k not in _wtext]
     if _wmiss:
         _old.append(f"fem_worker.py: veraltet (es fehlt {', '.join(_wmiss)})")
 else:
@@ -53,35 +61,13 @@ if _old:
     st.caption(f"Ordner: {HERE}. Zusammengehörig sind fem_app.py, fem_geometry.py, fem_materials.py, fem_post.py, fem_run.py und fem_worker.py.")
     st.stop()
 
-TYPE_LABELS = {"library": "Bibliothek (hpfem)", "index": "n + ik (konstant)", "eps": "ε (konstant)", "drude": "Drude-Metall", "table": "Tabelle λ, n, k"}
-LIB_CHOICES = ["Si", "Ag", "Au", "Al", "GaAs", "MAPbI3", "SiO2", "TiO2", "water", "air", "vacuum"]
-DEFAULT_SPEC = {"library": {"type": "library", "name": "SiO2"}, "index": {"type": "index", "n": 1.5, "k": 0.0},
-                "eps": {"type": "eps", "re": 2.25, "im": 0.0}, "drude": {"type": "drude", "eps_inf": 1.0, "omega_p_eV": 9.0, "gamma_eV": 0.07},
-                "table": {"type": "table", "rows": [[400.0, 1.5, 0.0], [800.0, 1.5, 0.0]]}}
-ENGINE_SHORT = {"conical": "konischer Löser", "inplane": "In-Ebenen-Löser", "inplane_hp": "In-Ebenen-Löser, hp-adaptiv"}
+ENGINE_SHORT = {"grating": "hpfem.grating", "grating_hp": "hpfem.grating, hp-adaptiv", "conical": "konischer Löser (klassisch)",
+                "inplane": "In-Ebenen-Löser", "inplane_hp": "In-Ebenen-Löser, hp-adaptiv"}
 SWEEP_MODES = {"none": "kein Durchlauf (ein Punkt)", "wavelength": "Wellenlänge", "theta": "Einfallswinkel θ", "phi": "Azimut φ (konisch)"}
 
 
 # ------------------------------------------------------------------------------------------------------------------- helpers
-def table_show(obj):
-    try:
-        st.dataframe(obj, width="stretch", hide_index=True)
-    except Exception:
-        st.dataframe(obj, use_container_width=True, hide_index=True)
-
-
-def show_fig(fig, name, key):
-    import matplotlib.pyplot as plt
-
-    st.pyplot(fig)
-    b = io.BytesIO()
-    fig.savefig(b, format="png", dpi=150, bbox_inches="tight")
-    st.download_button("Bild herunterladen (PNG)", b.getvalue(), file_name=name, mime="image/png", key=key)
-    plt.close(fig)
-
-
-def csv_bytes(df):
-    return df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+table_show, show_fig, csv_bytes, unique_name = ui.table_show, ui.show_fig, ui.csv_bytes, ui.unique_name
 
 
 def next_uid():
@@ -117,16 +103,18 @@ def init_state():
     S.model = copy.deepcopy(next(iter(fg.presets().values())))
     ensure_uids(S.model)
     S.mesh_settings = dict(cells_per_wavelength=3.0, skin_cells=1.0, interface_factor=0.7, curved=True, pml_cells_per_wavelength=6.0)
-    S.solver = dict(order=4, backend="AUTO", pml_target=1e-3, pml_angle_cap_deg=80.0, orders_max=3, order_points=64, engine="conical",
-                    adaptive=dict(p0=3, steps=12, max_dofs=150000, dorfler=0.5, tol=1e-4, reuse_mesh=True))
-    S.maps = dict(enabled=True, indices=[0], res_nm=4.0, triangulate=True, subdiv=3)
+    S.solver = dict(order=4, backend="AUTO", pml_target=1e-3, pml_angle_cap_deg=80.0, orders_max=3, order_points=64, engine="grating",
+                    jacobian=False, scalar="auto", check=True,
+                    adaptive=dict(p0=3, steps=12, max_dofs=150000, dorfler=0.5, tol=1e-4, reuse_mesh=True, estimator="residual", mirror_periodic=True))
+    S.maps = dict(enabled=True, indices=[0], res_nm=4.0, triangulate=True, subdiv=3, hs=True)
+    S.task, S.resonance = "scattering", dict(num_modes=6, krylov_dimension=0)
     S.mesh_sig, S.mesh_stats, S.run_proc, S.run_msg = None, None, None, ""
 
 
 def p_eff():
     """Polynomial order that sets the size of the problem: the start order of an hp-adaptive run, else p."""
     sv = S.solver
-    return int(sv["adaptive"]["p0"]) if sv.get("engine") == "inplane_hp" else int(sv["order"])
+    return int(sv["adaptive"]["p0"]) if sv.get("engine", "").endswith("_hp") else int(sv["order"])
 
 
 def geom_signature(model, ms):
@@ -201,13 +189,6 @@ def add_layer():
     S.model["layers"].append(dict(material=next((n for n in names if n != S.model["cover"]), names[0]), thickness_nm=100.0, uid=next_uid()))
 
 
-def unique_name(model, base):
-    n, k = base, 2
-    while n in model["materials"]:
-        n, k = f"{base} {k}", k + 1
-    return n
-
-
 # --------------------------------------------------------------------------------------------------------------------- state
 init_state()
 model = S.model
@@ -215,38 +196,60 @@ ver = S.ver
 
 # ------------------------------------------------------------------------------------------------------------------ sidebar
 st.sidebar.title("FEM-Modellwerkstatt")
-presets = fg.presets()
-choice = st.sidebar.selectbox("Vorlage", ["– auswählen –"] + list(presets), key="preset_choice",
-                              help="Beispielmodelle zum Ausprobieren und als Ausgangspunkt für eigene Modelle.")
-if st.sidebar.button("Vorlage laden", key="load_preset", disabled=choice.startswith("–")):
-    set_model(presets[choice])
-    S.mesh_sig = None
-    st.rerun()
-up = st.sidebar.file_uploader("Modell laden (JSON)", type=["json"], key="model_upload")
-if up is not None and S.get("loaded_upload") != (up.name, up.size):
-    try:
-        set_model(fg.load_model(up.getvalue().decode("utf-8")))
-        S.loaded_upload = (up.name, up.size)
+MODES = {"periodic": "Periodische Struktur (Gitter, Metaoberfläche)", "axi": "Rotationskörper: Resonator, Emitter"}
+app_mode = st.sidebar.radio("Art des Modells", list(MODES), format_func=MODES.get, key="app_mode",
+                            help="Periodisch: Elementarzelle mit Bloch-Rändern, ebene Welle (Streuung, Beugung). Rotationskörper: Struktur mit "
+                                 "Rotationssymmetrie um z (Mikrosäule, Kugel, Scheibe), Resonanzen und Emission eines Dipols.")
+if app_mode == "axi":
+    fem_axi_app.sidebar_model()
+else:
+    presets = fg.presets()
+    choice = st.sidebar.selectbox("Vorlage", ["– auswählen –"] + list(presets), key="preset_choice",
+                                  help="Beispielmodelle zum Ausprobieren und als Ausgangspunkt für eigene Modelle.")
+    if st.sidebar.button("Vorlage laden", key="load_preset", disabled=choice.startswith("–")):
+        set_model(presets[choice])
         S.mesh_sig = None
         st.rerun()
-    except Exception as exc:
-        st.sidebar.error(f"Datei nicht lesbar: {exc}")
-st.sidebar.download_button("Modell speichern (JSON)", json.dumps(clean(model), indent=1, ensure_ascii=False).encode("utf-8"),
-                           file_name="modell.json", mime="application/json", key="save_model")
+    up = st.sidebar.file_uploader("Modell laden (JSON)", type=["json"], key="model_upload")
+    if up is not None and S.get("loaded_upload") != (up.name, up.size):
+        try:
+            set_model(fg.load_model(up.getvalue().decode("utf-8")))
+            S.loaded_upload = (up.name, up.size)
+            S.mesh_sig = None
+            st.rerun()
+        except Exception as exc:
+            st.sidebar.error(f"Datei nicht lesbar: {exc}")
+    st.sidebar.download_button("Modell speichern (JSON)", json.dumps(clean(model), indent=1, ensure_ascii=False).encode("utf-8"),
+                               file_name="modell.json", mime="application/json", key="save_model")
 st.sidebar.divider()
 st.sidebar.subheader("Rechner")
 py = st.sidebar.text_input("Python mit hpfem", value=fr.default_python(), key="solver_py",
-                           help="Das Python, in dem hpfem gebaut ist (MSYS2: C:/msys64/ucrt64/bin/python3.exe).")
+                           help="Das Python, in dem hpfem installiert (Wheel, `pip install hpfem`) oder gebaut ist (MSYS2: C:/msys64/ucrt64/bin/python3.exe). "
+                                "Vorbelegt ist das Python dieser App, wenn es hpfem hat.")
+
+
 def _default_repo():
     import os
-    for c in (os.environ.get("HPFEM_REPO"), HERE.parent.parent / "hp-FEM", HERE.parent / "hp-FEM", HERE):
-        if c and (Path(c) / "python").is_dir():
+    for c in (os.environ.get("HPFEM_REPO"), HERE.parent.parent / "hp-FEM-lib", HERE.parent.parent / "hp-FEM", HERE.parent / "hp-FEM", HERE):
+        if c and (Path(c) / "python" / "hpfem").is_dir():
             return str(c)
-    return str(HERE)
+    return ""
 
 
-repo = st.sidebar.text_input("hp-FEM-Ordner (enthält python/)", value=_default_repo(), key="solver_repo")
-fm.set_repo(repo)
+repo = st.sidebar.text_input("hp-FEM-Ordner (optional, enthält python/)", value=_default_repo(), key="solver_repo",
+                             help="Quellordner von hp-FEM. Wird nur gebraucht, wenn hpfem dort gebaut ist (dann kommt er in den PYTHONPATH des Workers) "
+                                  "oder für die Materialdaten, falls hpfem nicht installiert ist. Ein Ordner ohne gebautes Modul verdeckt das installierte "
+                                  "hpfem nicht.")
+fm.set_repo(repo or None)
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def probe_library(py_, repo_):
+    return fr.probe_library(py_, repo_)
+
+
+lib = probe_library(py, repo)
+FEATS = lib.get("features", {}) if not lib.get("error") else {}
 work = Path(st.sidebar.text_input("Arbeitsordner", value=str(HERE / "fem_work"), key="work_dir"))
 threads = st.sidebar.number_input("Threads (0 = Standard)", 0, 64, 0, key="threads")
 try:
@@ -254,8 +257,23 @@ try:
     st.sidebar.success("Gmsh gefunden")
 except Exception:
     st.sidebar.error("Gmsh fehlt: pip install gmsh")
-if not (Path(repo) / "python").is_dir():
-    st.sidebar.warning("Im hp-FEM-Ordner fehlt python/ (hpfem).")
+if lib.get("error"):
+    st.sidebar.error(f"hpfem lässt sich in diesem Python nicht laden: {lib['error'][-300:]}")
+else:
+    vi = lib.get("version_info", {})
+    st.sidebar.success(f"hpfem {lib.get('hpfem', '?')}" + (f" · {', '.join(vi.get('backends', []))}" if vi.get("backends") else "") +
+                       (f" · {vi['threads']} Threads" if vi.get("threads") else ""))
+    missing = [lab for k, lab in (("grating", "grating.solve"), ("jacobian", "Ableitungen"), ("resonances", "Resonanzen"), ("dwr", "DWR-Schätzer"))
+               if not FEATS.get(k)]
+    if missing:
+        st.sidebar.warning("Ältere hpfem-Version, es fehlen: " + ", ".join(missing) + ". Die App bietet dann nur die klassischen Löser an.")
+with st.sidebar.expander("Bibliothek: Details"):
+    st.json(lib, expanded=False)
+    if st.button("Erneut prüfen", key="reprobe"):
+        probe_library.clear()
+        st.rerun()
+if repo and not (Path(repo) / "python").is_dir():
+    st.sidebar.warning("Im hp-FEM-Ordner fehlt python/.")
 if not fm.library_available():
     st.sidebar.warning("Materialdaten der Bibliothek nicht gefunden (python/hpfem/data): Bibliotheksmaterialien lassen sich nicht anzeigen; "
                        "die Rechnung selbst kann sie trotzdem nutzen.")
@@ -268,23 +286,172 @@ if proc is not None:
     if proc.poll() is None:
         frac, label = fr.progress_info(log)
         st.progress(frac, text=label)
+        est = fr.estimate_line(log)
+        if est:
+            st.caption(f"Speicherschätzung der Bibliothek: {est}")
+        for sev, code_, text_ in fr.diagnostics_lines(log):
+            (st.error if sev == "error" else st.warning if sev == "warning" else st.info)(f"{code_}: {text_}")
         st.code("\n".join(log.splitlines()[-18:]) or "(noch keine Ausgabe)")
-        if st.button("Abbrechen", key="cancel_run"):
-            proc.terminate()
-            S.run_proc, S.run_msg = None, "Rechnung abgebrochen (bis dahin berechnete Punkte stehen unter Ergebnisse)."
-            S.view_dir = S.run_dir
+        c1, c2 = st.columns(2)
+        if S.get("cancel_requested"):
+            c1.info("Abbruch angefordert: der Löser hält nach der laufenden Phase an …")
+            if c2.button("Sofort beenden", key="kill_run", help="Beendet den Prozess hart; der laufende Punkt geht verloren."):
+                proc.terminate()
+                S.run_proc, S.run_msg, S.cancel_requested = None, "Rechnung beendet (bis dahin berechnete Punkte stehen unter Ergebnisse).", False
+                S[("ax_view_dir" if S.get("run_kind") == "axi" else "view_dir")] = S.run_dir
+                st.rerun()
+        elif c1.button("Abbrechen", key="cancel_run",
+                       help="Der Löser hält zwischen zwei Phasen (Assemblierung, Faktorisierung, Lösen) bzw. zwischen zwei Punkten an; alles bis dahin Berechnete bleibt."):
+            fr.request_cancel(S.run_dir)
+            S.cancel_requested = True
             st.rerun()
         time.sleep(1.5)
         st.rerun()
     else:
         flags = fr.log_flags(log)
         code = proc.returncode
-        S.run_proc = None
-        S.view_dir = S.run_dir
-        S.run_msg = ("Fertig." if code == 0 and not flags["errors"] else
-                     f"Beendet mit Code {code}" + (f", {len(flags['errors'])} Fehlermeldung(en)." if flags["errors"] else "."))
+        S.run_proc, S.cancel_requested = None, False
+        S[("ax_view_dir" if S.get("run_kind") == "axi" else "view_dir")] = S.run_dir
+        if flags["cancelled"]:
+            S.run_msg = "Rechnung abgebrochen (bis dahin berechnete Punkte stehen unter Ergebnisse)."
+        else:
+            S.run_msg = ("Fertig." if code == 0 and not flags["errors"] else
+                         f"Beendet mit Code {code}" + (f", {len(flags['errors'])} Fehlermeldung(en)." if flags["errors"] else "."))
         S.run_ok = code == 0 and not flags["errors"]
         st.rerun()
+    st.stop()
+
+def maps_view(view, res, rmodel, periodic=True):
+    maps = sorted(view.glob("maps_*.npz"), key=lambda p: int(p.stem.split("_")[1]))
+    if not maps:
+        st.info("Für diese Rechnung wurden keine Feldkarten gespeichert (Reiter 3: „Feldkarten speichern“).")
+    else:
+        c = st.columns(4)
+        which = c[0].selectbox("Punkt Nr.", [int(p.stem.split("_")[1]) for p in maps], key="map_which")
+        tri_file = view / f"tri_{which}.npz"
+        with np.load(view / f"maps_{which}.npz") as z_:
+            has_ = {"H": "H" in z_.files, "S": "S" in z_.files}
+        qopts = [k for k in fp.QUANTITIES if (has_["H"] or not (fp.QUANTITIES[k][0] == "Habs" or fp.QUANTITIES[k][0][0] == "h"))
+                 and (has_["S"] or not (fp.QUANTITIES[k][0] == "Sabs" or fp.QUANTITIES[k][0][0] == "s"))]
+        qkey = c[1].selectbox("Größe", qopts, key="map_q",
+                              help="H und der Poynting-Vektor S stehen zur Verfügung, wenn die Rechnung sie gespeichert hat (hpfem ab 0.4).")
+        periods = c[2].selectbox("Perioden", [1, 2, 3], key="map_periods") if periodic else 1
+        cmap = c[3].selectbox("Farbskala", ["automatisch", "inferno", "viridis", "magma", "turbo", "RdBu_r", "coolwarm"], key="map_cm")
+        c = st.columns(4)
+        logs = c[0].checkbox("logarithmisch", key="map_log")
+        geo = c[1].checkbox("Geometrie einzeichnen", value=True, key="map_geo")
+        msh = c[2].checkbox("Netz einzeichnen", key="map_mesh")
+        vmax_txt = c[3].text_input("Obergrenze der Skala (leer = automatisch)", "", key="map_vmax")
+        pt = next(p for p in res["points"] if p.get("index") == which)
+        A_en = pt["A"] if pt.get("A") is not None else pt.get("A_incl_substrate")
+        try:
+            vmax = float(vmax_txt) if vmax_txt.strip() else None
+        except ValueError:
+            vmax = None
+        rep = st.radio("Darstellung", ["Elemente (exakt)", "Raster"], horizontal=True, key="map_rep",
+                       help="Elemente: Feld auf den unterteilten Dreiecken des Netzes, Sprünge an Materialgrenzen scharf. Raster: reguläres Gitter.") \
+            if tri_file.is_file() else "Raster"
+        if rep.startswith("Elemente"):
+            tri = fp.load_tri(tri_file)
+            show_fig(fp.fig_map_tri(tri, fp.derived_tri(tri, rmodel), rmodel, qkey, periods=periods, cmap=None if cmap == "automatisch" else cmap, vmax=vmax,
+                                    log=logs, show_geometry=geo), f"karte_{which}_elemente.png", "dl_map")
+            if msh:
+                st.caption("Das Netz lässt sich nur in der Rasterdarstellung einzeichnen.")
+        else:
+            mp = fp.load_map(view / f"maps_{which}.npz")
+            d = fp.derived(mp, rmodel, A_en)
+            show_fig(fp.fig_map(mp, d, rmodel, qkey, periods=periods, cmap=None if cmap == "automatisch" else cmap, vmax=vmax, log=logs,
+                                mesh_npz=(view / "mesh_plot.npz") if msh else None, show_geometry=geo), f"karte_{which}.png", "dl_map")
+        st.caption("Feld in den Achsen der Rechnung: x entlang der Periode, y vertikal, z entlang der Linien. Einfallende Welle mit Amplitude |E₀| = 1.")
+
+
+def cuts_view(view, rmodel):
+    maps = sorted(view.glob("maps_*.npz"), key=lambda p: int(p.stem.split("_")[1]))
+    if not maps:
+        st.info("Keine Feldkarten gespeichert.")
+    else:
+        c = st.columns(3)
+        which = c[0].selectbox("Punkt Nr.", [int(p.stem.split("_")[1]) for p in maps], key="cut_which")
+        axis = c[1].radio("Schnitt", ["vertikal (bei festem x)", "horizontal (bei festem y)"], key="cut_axis")
+        mp = fp.load_map(view / f"maps_{which}.npz")
+        d = fp.derived(mp, rmodel)
+        if axis.startswith("vertikal"):
+            pos = c[2].slider("x (nm)", float(d["x"][0]), float(d["x"][-1]), float((d["x"][0] + d["x"][-1]) / 2), key="cut_x")
+            show_fig(fp.fig_cut(d, rmodel, "y", pos), "schnitt_vertikal.png", "dl_cut")
+        else:
+            pos = c[2].slider("y (nm)", float(d["y"][0]), float(d["y"][-1]), 0.0, key="cut_y")
+            show_fig(fp.fig_cut(d, rmodel, "x", pos), "schnitt_horizontal.png", "dl_cut")
+
+
+def iso_results(view, res, rmodel, mode):
+    """Results of an isolated structure (PML left and right): widths, detectors, far field, maps, cuts, convergence, table."""
+    pts = res["points"]
+    ok = [p for p in pts if "error" not in p]
+    ext = fg.shapes_x_extent(rmodel)
+    width = (ext[1] - ext[0]) if ext else None
+    sub = st.tabs(["Querschnitte", "Detektoren", "Streudiagramm", "Feldkarten", "Schnitte", "Konvergenz in p", "Tabelle und Export"])
+    with sub[0]:
+        if ok:
+            show_fig(fp.fig_widths(ok, mode, width), "querschnitte.png", "dl_iso_w")
+            mie = [p for p in ok if p.get("mie") and p.get("sigma_sca") is not None]
+            if mie:
+                dev = max(abs(p["sigma_sca"] - p["mie"]["sigma_sca"]) / max(p["mie"]["sigma_sca"], 1e-30) for p in mie)
+                dex = max(abs(p["sigma_ext"] - p["mie"]["sigma_ext"]) / max(p["mie"]["sigma_ext"], 1e-30) for p in mie if p.get("sigma_ext") is not None) \
+                    if any(p.get("sigma_ext") is not None for p in mie) else None
+                (st.success if dev < 1e-2 else st.warning)(f"Einzelner Kreiszylinder: Vergleich mit der Mie-Reihe, größte relative Abweichung Streuung "
+                                                           f"{dev:.1e}" + (f", Extinktion {dex:.1e}" if dex is not None else "") + ".")
+            if not any(p.get("sigma_ext") is not None for p in ok):
+                st.info("Mit Schichtstapel gibt es nur die Streubreite (Leistung des Streufelds aus der Messbox) und den Anteil nach oben: die "
+                        "Absorption der Bibliothek enthält die Absorption des ebenen Stapels und ist dort kein Querschnitt. Detektoren (nächster Reiter) "
+                        "messen den Energiefluss des Gesamtfelds.")
+            st.caption("Querschnitte je Längeneinheit (2D, „Breiten“) in nm: Leistung je Meter Länge geteilt durch die einfallende Intensität n|E₀|²/(2Z₀) "
+                       "im Einfallsmedium. σ_sca aus dem Fluss des Streufelds durch die geschlossene Messbox (grün in der Vorschau); in homogener Umgebung "
+                       "σ_abs und σ_ext aus hpfem (conical_cross_sections). Effizienz rechts: σ geteilt durch die Breite der Formen.")
+        else:
+            st.info("Keine auswertbaren Punkte.")
+    with sub[1]:
+        if ok and ok[0].get("detectors"):
+            show_fig(fp.fig_detectors(ok, mode), "detektoren.png", "dl_iso_det")
+            rows = [{"Nr": p["index"], "λ (nm)": p["lam_nm"], "Detektor": d["name"], "y (nm)": d["y_nm"], "x von–bis (nm)": f"{d['x0_nm']:g}–{d['x1_nm']:g}",
+                     "P nach unten (W/m)": d["P_down"], "normiert": d["normalised"]} for p in ok for d in p["detectors"]]
+            table_show(pd.DataFrame(rows))
+            st.caption("Energiefluss des Gesamtfelds nach unten (−y) durch die Detektorstrecke, je Meter Länge, für |E₀| = 1 V/m; normiert auf den "
+                       "einfallenden Fluss durch dieselbe Breite im Einfallsmedium. Für Vergleiche zweier Rechnungen (z. B. S/S₀ im Slit-Groove-Benchmark) "
+                       "die Werte „P nach unten“ beider Rechnungen teilen.")
+        else:
+            st.info("Keine Detektoren im Modell (Reiter 1, Rechengebiet).")
+    with sub[2]:
+        ff = [p for p in ok if p.get("farfield_dsigma")]
+        if ff:
+            idx = st.selectbox("Punkt Nr.", [p["index"] for p in ff], key="iso_ff_pick")
+            show_fig(fp.fig_farfield_iso(next(p for p in ff if p["index"] == idx)), "streudiagramm.png", "dl_iso_ff")
+            st.caption("Differentielle Streubreite dσ/dφ aus dem Fernfeld (hpfem ConicalFarField) in der Ebene senkrecht zu den Linien; nur in homogener "
+                       "Umgebung (mit Substrat gilt die Fernfeld-Transformation der Bibliothek nicht).")
+        else:
+            st.info("Kein Fernfeld: nur in homogener Umgebung (gleiches Material oben und unten, keine Schichten, PML unten).")
+    with sub[3]:
+        maps_view(view, res, rmodel, periodic=False)
+    with sub[4]:
+        cuts_view(view, rmodel)
+    with sub[5]:
+        if res.get("pscan"):
+            show_fig(fp.fig_pscan(res["pscan"]), "konvergenz_p.png", "dl_iso_pscan")
+            table_show(fp.iso_dataframe(res["pscan"], "none"))
+        else:
+            st.info("Keine Konvergenzstudie in dieser Rechnung (Reiter 3: „Konvergenzstudie in p“).")
+    with sub[6]:
+        df = fp.iso_dataframe(pts, mode)
+        if len(df):
+            table_show(df)
+            st.download_button("Ergebnisse (CSV)", csv_bytes(df), file_name="ergebnisse_isoliert.csv", mime="text/csv", key="dl_iso_csv")
+        st.download_button("Modell dieser Rechnung (JSON)", json.dumps(rmodel, indent=1, ensure_ascii=False).encode("utf-8"), file_name="modell_der_rechnung.json",
+                           mime="application/json", key="dl_iso_model")
+        st.caption(f"Ordner mit allen Dateien: {view}")
+
+
+# ------------------------------------------------------------------------------------------------- body of revolution mode
+if app_mode == "axi":
+    fem_axi_app.render(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
     st.stop()
 
 # ------------------------------------------------------------------------------------------------------------------ tabs
@@ -298,8 +465,26 @@ with t_model:
     inc, sw, dom = model["incidence"], model["sweep"], model["domain"]
     with left:
         model["name"] = st.text_input("Name des Modells", value=model["name"], key=f"name_{ver}")
-        new_period = float(st.number_input("Periode P (nm)", value=float(model["period_nm"]), min_value=1.0, step=10.0, format="%.6g",
-                                           key=f"period_{ver}", help="Breite der Elementarzelle in x. Das Gitter setzt sich periodisch fort."))
+        dom_ = model["domain"]
+        dom_.setdefault("lateral", "periodic")
+        dom_.setdefault("pml_side_nm", 0.0)
+        model.setdefault("detectors", [])
+        LAT = {"periodic": "periodisch (Gitter, Bloch-Ränder)", "pml": "isoliert (einzelne Struktur, PML links und rechts)"}
+        lat = st.radio("Seitliche Ränder", list(LAT), index=list(LAT).index(dom_["lateral"]), format_func=LAT.get, horizontal=True, key=f"lat_{ver}",
+                       help="Isoliert: eine einzelne Struktur (Draht, Graben, Schlitz, Stufe) im Schichtstapel; links und rechts absorbieren PML-Schichten, "
+                            "die Schichten laufen hindurch. Ergebnisse: Streu-, Absorptions- und Extinktionsbreite, Fernfeld, Detektoren, Felder.")
+        if lat != dom_["lateral"]:
+            dom_["lateral"] = lat
+            if lat == "pml" and dom_["pml_side_nm"] <= 0:
+                dom_["pml_side_nm"] = float(max(dom_.get("pml_top_nm", 600.0), 300.0))
+            S.ver += 1
+            st.rerun()
+        iso_ = lat == "pml"
+        new_period = float(st.number_input("Breite des Innengebiets (nm)" if iso_ else "Periode P (nm)", value=float(model["period_nm"]), min_value=1.0,
+                                           step=10.0, format="%.6g",
+                                           key=f"period_{ver}", help="Isoliert: Breite des Gebiets zwischen den seitlichen PML-Schichten (Struktur plus Abstand). "
+                                                                        "Periodisch: Breite der Elementarzelle in x, das Gitter setzt sich fort." if iso_ else
+                                                                        "Breite der Elementarzelle in x. Das Gitter setzt sich periodisch fort."))
         if abs(new_period - model["period_nm"]) > 1e-12:
             if S.get("follow_period") and model["shapes"]:                       # keep the shapes centred when the period changes
                 fg.shift_shapes(model, (new_period - model["period_nm"]) / 2)
@@ -320,81 +505,11 @@ with t_model:
 
         # ---------------------------------------------------------------- materials
         st.subheader("Materialien")
-        for name in list(model["materials"]):
-            spec = model["materials"][name]
-            with st.expander(f"{name}: {fm.describe(spec)}"):
-                c1, c2 = st.columns(2)
-                newname = c1.text_input("Name", value=name, key=f"mn_{ver}_{name}")
-                typ = c2.selectbox("Typ", list(TYPE_LABELS), index=list(TYPE_LABELS).index(spec["type"]), format_func=TYPE_LABELS.get,
-                                   key=f"mt_{ver}_{name}")
-                if typ != spec["type"]:
-                    model["materials"][name] = copy.deepcopy(DEFAULT_SPEC[typ])
-                    S.ver += 1
-                    st.rerun()
-                if typ == "library":
-                    spec["name"] = st.selectbox("Bibliotheksmaterial", list(fm.LIBRARY), index=list(fm.LIBRARY).index(spec["name"]),
-                                                key=f"ml_{ver}_{name}", help="Gemessene Daten (n, k) bzw. Sellmeier-Formel, mit Gültigkeitsbereich.")
-                    r = fm.valid_range(spec)
-                    if r:
-                        st.caption(f"Gültig von {r[0]:.0f} bis {r[1]:.0f} nm.")
-                elif typ == "index":
-                    c1, c2 = st.columns(2)
-                    spec["n"] = float(c1.number_input("n", value=float(spec["n"]), step=0.1, format="%.5g", key=f"mi_n_{ver}_{name}"))
-                    spec["k"] = float(c2.number_input("k (Extinktion, ≥ 0)", value=float(spec["k"]), min_value=0.0, step=0.1, format="%.5g",
-                                                       key=f"mi_k_{ver}_{name}"))
-                elif typ == "eps":
-                    c1, c2 = st.columns(2)
-                    spec["re"] = float(c1.number_input("Re ε", value=float(spec["re"]), step=0.1, format="%.6g", key=f"me_r_{ver}_{name}"))
-                    spec["im"] = float(c2.number_input("Im ε (Verlust > 0)", value=float(spec["im"]), step=0.1, format="%.6g", key=f"me_i_{ver}_{name}",
-                                                        help="Konvention exp(−iωt): Verlust bedeutet Im ε > 0."))
-                elif typ == "drude":
-                    c1, c2, c3 = st.columns(3)
-                    spec["eps_inf"] = float(c1.number_input("ε∞", value=float(spec["eps_inf"]), step=0.1, format="%.5g", key=f"md_e_{ver}_{name}"))
-                    spec["omega_p_eV"] = float(c2.number_input("ħωp (eV)", value=float(spec["omega_p_eV"]), min_value=0.01, step=0.1, format="%.5g",
-                                                                key=f"md_p_{ver}_{name}"))
-                    spec["gamma_eV"] = float(c3.number_input("ħγ (eV)", value=float(spec["gamma_eV"]), min_value=0.0, step=0.01, format="%.5g",
-                                                              key=f"md_g_{ver}_{name}"))
-                else:
-                    txt = st.text_area("Zeilen: Wellenlänge (nm), n, k", value="\n".join(f"{a:g}, {b:g}, {c:g}" for a, b, c in spec["rows"]),
-                                       key=f"mtab_{ver}_{name}", height=120, help="Linear interpoliert, keine Extrapolation.")
-                    try:
-                        rows = [[float(v) for v in line.replace(";", ",").split(",")] for line in txt.splitlines() if line.strip()]
-                        if len(rows) >= 2 and all(len(r) == 3 for r in rows):
-                            spec["rows"] = rows
-                        else:
-                            st.error("Mindestens zwei Zeilen mit je drei Zahlen.")
-                    except ValueError:
-                        st.error("Zahlen nicht lesbar.")
-                lam0 = inc["wavelength_nm"]
-                try:
-                    n_, k_ = fm.nk(spec, lam0)
-                    st.caption(f"bei {lam0:g} nm: n = {n_:.4f}, k = {k_:.4f}, ε = {fm.eps_at(spec, lam0).real:.4f} {fm.eps_at(spec, lam0).imag:+.4f} i")
-                except Exception as exc:
-                    st.caption(f"bei {lam0:g} nm: {exc}")
-                b1, b2 = st.columns(2)
-                if newname != name and newname.strip():
-                    if newname in model["materials"]:
-                        b1.error("Name schon vergeben.")
-                    else:
-                        rename_material(model, name, newname.strip())
-                        S.ver += 1
-                        st.rerun()
-                in_use = name in used_materials(model)
-                if b2.button("Material löschen", key=f"mdel_{ver}_{name}", disabled=in_use or len(model["materials"]) <= 1,
-                             help="Nur möglich, wenn das Material nirgends verwendet wird."):
-                    del model["materials"][name]
-                    S.ver += 1
-                    st.rerun()
-        c1, c2, c3 = st.columns([3, 2, 2])
-        lib_pick = c1.selectbox("Aus der Bibliothek hinzufügen", ["–"] + [n for n in LIB_CHOICES], key=f"libadd_{ver}")
-        if c2.button("Bibliotheksmaterial hinzufügen", key=f"libadd_btn_{ver}", disabled=lib_pick == "–"):
-            model["materials"][unique_name(model, lib_pick)] = {"type": "library", "name": lib_pick}
+
+        def _bump():
             S.ver += 1
-            st.rerun()
-        if c3.button("Eigenes Material hinzufügen", key=f"matadd_{ver}"):
-            model["materials"][unique_name(model, "Material")] = copy.deepcopy(DEFAULT_SPEC["index"])
-            S.ver += 1
-            st.rerun()
+
+        ui.material_editor(model, ver, inc["wavelength_nm"], used_materials(model), rename_material, _bump)
         names = list(model["materials"])
 
         # ---------------------------------------------------------------- stack
@@ -492,6 +607,27 @@ with t_model:
                                                            format="%.6g", key=f"pmlb_{ver}"))
         else:
             dom["pml_bottom_nm"] = 0.0
+        if fg.isolated(model):
+            c = st.columns(2)
+            dom["pml_side_nm"] = float(c[0].number_input("PML links und rechts (nm)", value=float(dom.get("pml_side_nm", 600.0)), min_value=50.0, step=50.0,
+                                                         format="%.6g", key=f"pmls_{ver}",
+                                                         help="Seitliche absorbierende Schichten; etwa so dick wie die PML oben. Bei schwach gedämpften "
+                                                              "Oberflächenplasmonen oder geführten Moden größer wählen."))
+            c[1].caption("Hinter den PML-Schichten liegt eine Metallwand. Die Messbox (grün) für die Streuleistung liegt automatisch zwischen der "
+                         "Struktur und dem Rand des Innengebiets.")
+            st.markdown("**Detektoren** (waagrechte Strecken; gemessen wird der Energiefluss des Gesamtfelds nach unten)")
+            txt = st.text_area("Eine Zeile je Detektor: Name; y (nm); x von (nm); x bis (nm)",
+                               value="\n".join(f"{d_['name']}; {d_['y_nm']:g}; {d_['x0_nm']:g}; {d_['x1_nm']:g}" for d_ in model.get("detectors", [])),
+                               key=f"dets_{ver}", height=90)
+            try:
+                dets = []
+                for line in txt.splitlines():
+                    if line.strip():
+                        a = [v.strip() for v in line.split(";")]
+                        dets.append(dict(name=a[0], y_nm=float(a[1]), x0_nm=float(a[2]), x1_nm=float(a[3])))
+                model["detectors"] = dets
+            except (ValueError, IndexError):
+                st.error("Detektoren: je Zeile Name; y; x von; x bis (Zahlen in nm).")
 
     with right:
         lam_lo, lam_hi = fr.wavelength_range(model)
@@ -525,7 +661,7 @@ with t_mesh:
     ms["cells_per_wavelength"] = float(c[0].slider("Elemente pro Wellenlänge", 1.0, 12.0, float(ms["cells_per_wavelength"]), 0.5, key="ms_cpw",
                                                    help="Bei hoher Polynomordnung p genügen etwa 12/p Elemente pro Wellenlänge im Material "
                                                         "(p = 4: 3, p = 3: 4, p = 2: 6). Mehr Elemente sind selten nötig und treiben die Freiheitsgrade hoch."))
-    ms["skin_cells"] = float(c[1].slider("Elemente pro Eindringtiefe (Metall)", 0.5, 4.0, float(ms["skin_cells"]), 0.5, key="ms_skin",
+    ms["skin_cells"] = float(c[1].slider("Elemente pro Eindringtiefe (Metall)", 0.2, 4.0, float(ms["skin_cells"]), 0.05, key="ms_skin",
                                          help="Feldabklinglänge 1/(k₀·k) im Metall, so viele Elemente darauf. Mit p = 4 genügt etwa 1."))
     ms["interface_factor"] = float(c[2].slider("Verfeinerung an Grenzflächen", 0.2, 1.0, float(ms["interface_factor"]), 0.05, key="ms_if",
                                                help="Faktor auf die Elementgröße an Materialgrenzen und Ecken (kleiner = feiner)."))
@@ -594,36 +730,83 @@ with t_run:
     sv, mp_ = S.solver, S.maps
     mp_.setdefault("triangulate", True)
     mp_.setdefault("subdiv", 3)
+    for k_, v_ in dict(jacobian=False, scalar="auto", check=True).items():
+        sv.setdefault(k_, v_)
+    for k_, v_ in dict(estimator="residual", mirror_periodic=True).items():
+        sv["adaptive"].setdefault(k_, v_)
+    mp_.setdefault("hs", True)
+    S.setdefault("task", "scattering")
+    S.setdefault("resonance", dict(num_modes=6, krylov_dimension=0))
     st.markdown("Der Solver (hp-FEM, Löser für TE, TM und konischen Einfall) rechnet die Streuung einer ebenen Welle an der periodischen Struktur: "
                 "Bloch-Randbedingung in x, absorbierende Schichten (PML) oben und ggf. unten, analytischer Schichtstapel als Hintergrund.")
+    has_grating = bool(FEATS.get("grating")) or bool(lib.get("error"))          # unknown library: offer it, the worker reports a missing API
+    TASKS = {"scattering": "Streuung: Querschnitte, Detektoren, Fernfeld, Felder" if fg.isolated(model) else "Streuung: R, T, Beugungsordnungen, Felder", "resonances": "Resonanzen: Eigenmoden der offenen Zelle (komplexe Frequenz, Güte Q)"}
+    task_avail = ["scattering"] + (["resonances"] if (FEATS.get("resonances") or lib.get("error")) and not fg.isolated(model) else [])
+    if S.task not in task_avail:
+        S.task = "scattering"
+    S.task = st.radio("Aufgabe", task_avail, index=task_avail.index(S.task), format_func=TASKS.get, horizontal=True, key="task_pick",
+                      help="Resonanzen: hpfem.grating.resonances sucht die Eigenmoden nahe der Wellenlänge der Beleuchtung bei der Bloch-Wellenzahl des "
+                           "Einfallswinkels. Ein Durchlauf über θ oder φ ergibt die Bandstruktur.")
     inplane_ok = inc["pol"] == "TM" and abs(inc["phi"]) < 1e-9
-    ENGINES = {"conical": "Konischer Löser (TE, TM, konisch), gleichmäßiges Netz",
+    ENGINES = {"grating": "hpfem.grating (empfohlen): TE, TM, konisch · Prüfungen, E_z-Pfad, Flussbilanz, Ableitungen",
+               "grating_hp": "hpfem.grating, hp-adaptiv: TE, TM, konisch · Residuen- oder DWR-Schätzer",
+               "conical": "Konischer Löser, klassisch (eigener Aufbau, auch für ältere hpfem)",
                "inplane": "In-Ebenen-Löser (nur TM, φ = 0), gleichmäßiges Netz",
                "inplane_hp": "In-Ebenen-Löser (nur TM, φ = 0), hp-adaptiv"}
-    avail = list(ENGINES) if inplane_ok else ["conical"]
+    ENGINES["isolated"] = "Isolierte Struktur: konischer Löser mit PML auf allen Seiten (TE, TM, konisch)"
+    avail = (["grating", "grating_hp"] if has_grating else []) + ["conical"] + (["inplane", "inplane_hp"] if inplane_ok else [])
+    if fg.isolated(model):
+        avail = ["isolated"]
+    if S.task == "resonances":
+        avail = ["grating"]
     if sv.get("engine") not in avail:
-        sv["engine"] = "conical"
+        sv["engine"] = avail[0]
     sv["engine"] = st.selectbox("Löser", avail, index=avail.index(sv["engine"]), format_func=ENGINES.get, key="sv_engine",
-                                help="Konischer Löser: TE, TM und Azimut, Netz und Ordnung bleiben fest. In-Ebenen-Löser: nur TM in der Einfallsebene, dafür mit "
-                                     "hp-adaptiver Verfeinerung (Fehlerschätzer, Dörfler-Markierung, h- oder p-Verfeinerung). Beide auf demselben Netz zu rechnen "
-                                     "vergleicht die Löser.")
-    if not inplane_ok:
-        st.caption("Der In-Ebenen-Löser (mit hp-Adaptivität) rechnet nur TM mit φ = 0. Für TE und konischen Einfall steht der konische Löser zur Verfügung.")
+                                help="hpfem.grating: die Ein-Aufruf-Schnittstelle der Bibliothek (ab 0.4) auf dem konischen Löser, mit den Prüfungen der Bibliothek, "
+                                     "dem skalaren E_z-Pfad (TE bei φ = 0: ein Drittel der Freiheitsgrade), exakter Absorption, Flussbilanz, Zeit je Phase, "
+                                     "Abbruch zwischen den Phasen und optional den Ableitungen. hp-adaptiv: Fehlerschätzer, Dörfler-Markierung, h- oder "
+                                     "p-Verfeinerung, jetzt auch für TE und konischen Einfall. Klassisch: der bisherige konische Löser dieser App. "
+                                     "In-Ebenen-Löser: nur TM in der Einfallsebene.")
+    if S.task == "resonances":
+        st.caption("Resonanzen rechnet immer hpfem.grating (Eigenwertproblem der offenen Zelle mit PML, PEC oben und unten).")
+    elif not inplane_ok:
+        st.caption("Der In-Ebenen-Löser rechnet nur TM mit φ = 0; die übrigen Löser rechnen TE, TM und konischen Einfall.")
     ad = sv["adaptive"]
     c = st.columns(4)
-    if sv["engine"] == "inplane_hp":
+    if sv["engine"].endswith("_hp"):
         ad["p0"] = int(c[0].number_input("Startordnung p₀", 1, 6, int(ad["p0"]), key="ad_p0", help="Anfangsordnung aller Elemente; die Schleife erhöht sie, wo das Feld glatt ist."))
     else:
         sv["order"] = int(c[0].slider("Polynomordnung p", 1, 8, int(sv["order"]), key="sv_p",
                                       help="Höhere Ordnung = genauer bei gleichem Netz, aber mehr Freiheitsgrade pro Element. 3 bis 5 sind üblich."))
     sv["pml_target"] = float(c[1].select_slider("PML-Zielfehler", options=[1e-2, 1e-3, 1e-4, 1e-5, 1e-6], value=float(sv["pml_target"]), format_func=lambda v: f"{v:g}",
                                                 key="sv_pml", help="Zulässiger Reflexionsfehler der PML (auf die Reflektanz). Wird für den größten Winkel der Beugungsordnungen ausgelegt."))
-    sv["backend"] = c[2].selectbox("Löser (direkt)", ["AUTO", "SPARSE_LU", "MUMPS"], index=["AUTO", "SPARSE_LU", "MUMPS"].index(sv["backend"]), key="sv_backend",
-                                   help="AUTO nimmt MUMPS, wenn verfügbar (schneller und sparsamer), sonst Eigen SparseLU.")
+    BACKENDS = ["AUTO", "SPARSE_LU", "MUMPS", "CUDSS"]
+    sv["backend"] = c[2].selectbox("Löser (direkt)", BACKENDS, index=BACKENDS.index(sv["backend"]) if sv["backend"] in BACKENDS else 0, key="sv_backend",
+                                   help="AUTO nimmt das schnellste verfügbare Verfahren (cuDSS auf der GPU, MUMPS, sonst Eigen SparseLU). Verfügbar in diesem "
+                                        "hpfem: " + (", ".join(lib.get("version_info", {}).get("backends", [])) or "unbekannt") + ".")
     sv["orders_max"] = int(c[3].number_input("Ordnungen bis ±", 1, 8, int(sv["orders_max"]), key="sv_orders", help="Größte Beugungsordnung, die ausgewertet wird."))
-    if sv["engine"] == "inplane_hp":
-        st.markdown("**hp-Adaptivität.** Jeder Schritt rechnet, schätzt den Fehler je Dreieck, markiert die schlechtesten (Dörfler) und verfeinert sie in h (teilen, "
-                    "wo das Feld singulär ist) oder in p (Ordnung erhöhen, wo es glatt ist). Dreiecke am periodischen Rand und in der PML werden nie markiert.")
+    if sv["engine"].endswith("_hp"):
+        if sv["engine"] == "grating_hp":
+            st.markdown("**hp-Adaptivität.** Jeder Schritt rechnet, schätzt den Fehler je Dreieck, markiert die schlechtesten (Dörfler) und verfeinert sie in h "
+                        "(teilen, wo das Feld singulär ist) oder in p (Ordnung erhöhen, wo es glatt ist). Dreiecke in der PML werden nie markiert; die "
+                        "periodischen Ränder dürfen verfeinert werden (hpfem koppelt auch nicht übereinstimmende Bloch-Ränder).")
+            c = st.columns(2)
+            est_opts = ["residual"] + (["dwr"] if (FEATS.get("dwr") or lib.get("error")) else [])
+            if ad["estimator"] not in est_opts:
+                ad["estimator"] = "residual"
+            ad["estimator"] = c[0].radio("Fehlerschätzer", est_opts, index=est_opts.index(ad["estimator"]), horizontal=True, key="ad_est",
+                                         format_func={"residual": "Residuum (Feld überall)", "dwr": "zielorientiert (DWR, experimentell): Fehler von R₀"}.get,
+                                         help="Residuum: verfeinert, wo das Feld insgesamt schlecht aufgelöst ist. DWR (dual-weighted residual): verfeinert nur, "
+                                              "was die spiegelnde Reflexion R₀ beeinflusst, und schätzt deren Fehler; stoppt, wenn er unter der Toleranz liegt. "
+                                              "Experimentell: in hp-FEM bisher nur am konstruierten Eckproblem verifiziert; am Ag-Gitter "
+                                              "(TM 50°) konvergierte es im Test nicht, das Residuum dagegen bis 3·10⁻⁴.")
+            ad["mirror_periodic"] = c[1].checkbox("Verfeinerung an den periodischen Rändern spiegeln", value=bool(ad["mirror_periodic"]), key="ad_mirror",
+                                                  help="Hält linken und rechten Rand gleich vernetzt (AdaptiveMesh.set_periodic). Aus: die Ränder dürfen sich "
+                                                       "unterscheiden, hpfem koppelt sie trotzdem (M15 F16).")
+        else:
+            st.markdown("**hp-Adaptivität.** Jeder Schritt rechnet, schätzt den Fehler je Dreieck, markiert die schlechtesten (Dörfler) und verfeinert sie in h "
+                        "(teilen, wo das Feld singulär ist) oder in p (Ordnung erhöhen, wo es glatt ist). Dreiecke am periodischen Rand und in der PML "
+                        "werden nie markiert.")
         c = st.columns(4)
         ad["steps"] = int(c[0].number_input("Höchstens Schritte", 1, 40, int(ad["steps"]), key="ad_steps"))
         ad["max_dofs"] = int(c[1].number_input("Höchstens Freiheitsgrade", 5000, 1000000, int(ad["max_dofs"]), 5000, key="ad_dofs",
@@ -636,6 +819,28 @@ with t_run:
         ad["reuse_mesh"] = st.checkbox("Bei einem Durchlauf nur am ersten Punkt adaptieren, das Endnetz für alle weiteren Punkte benutzen", value=bool(ad["reuse_mesh"]),
                                        key="ad_reuse", help="Spart viel Zeit bei Spektren; das Netz passt dann zur ersten Wellenlänge bzw. zum ersten Winkel.")
         st.info("Für die hp-Adaptivität ein grobes Startnetz wählen (Reiter 2: etwa 2 Elemente pro Wellenlänge, Startordnung 3). Die Verfeinerung setzt die Elemente dann selbst.")
+    if sv["engine"] == "grating" and S.task == "scattering":
+        c = st.columns(3)
+        sv["jacobian"] = c[0].checkbox("Ableitungen berechnen", value=bool(sv["jacobian"]) and bool(FEATS.get("jacobian", True)), key="sv_jac",
+                                       disabled=not (FEATS.get("jacobian") or lib.get("error")),
+                                       help="Jacobi-Matrix der Beugungseffizienzen (hpfem.grating.jacobian, M16): dR/dε und dT/dε jedes Materials in der Zelle "
+                                            "(Real- und Imaginärteil), dR/dλ, dR/dθ und bei konischem Einfall dR/dφ. Ein zusätzlicher Lösungsschritt auf der "
+                                            "behaltenen Faktorisierung; braucht mehr Speicher. ε bleibt dabei fest (keine Dispersion in dR/dλ).")
+        sv["scalar"] = c[1].selectbox("Skalarer E_z-Pfad", ["auto", "off"], index=["auto", "off"].index(sv["scalar"] if sv["scalar"] in ("auto", "off") else "auto"),
+                                      format_func={"auto": "automatisch (TE bei φ = 0)", "off": "aus (immer vektoriell)"}.get, key="sv_scalar",
+                                      help="Bei TE und φ = 0 hat das Feld nur E_z: die Bibliothek löst dann nur diesen Block (etwa ein Drittel der Freiheitsgrade, "
+                                           "gleiches Ergebnis).")
+        sv["check"] = c[2].checkbox("Prüfungen der Bibliothek: Fehler stoppen den Punkt", value=bool(sv["check"]), key="sv_check",
+                                    help="hpfem.diagnostics vor jeder Rechnung (Netz, periodische Ränder, PML, Auflösung, Materialbereich, streifende "
+                                         "Ordnungen …). Warnungen erscheinen im Protokoll und unter Ergebnisse.")
+    if S.task == "resonances":
+        rs_ = S.resonance
+        c = st.columns(3)
+        rs_["num_modes"] = int(c[0].number_input("Anzahl Moden", 1, 30, int(rs_["num_modes"]), key="rs_n",
+                                                 help="Die Moden mit der komplexen Frequenz am nächsten an der Zielfrequenz (Wellenlänge der Beleuchtung)."))
+        rs_["krylov_dimension"] = int(c[1].number_input("Krylov-Dimension (0 = automatisch)", 0, 400, int(rs_["krylov_dimension"]), 10, key="rs_k"))
+        c[2].caption(f"Ziel: λ = {inc['wavelength_nm']:g} nm, Bloch-Wellenzahl aus θ = {inc['theta']:g}°, φ = {inc['phi']:g}°. "
+                     "Ein Durchlauf über θ oder φ ergibt die Bänder; ein Durchlauf über λ verschiebt das Ziel.")
     with st.expander("Weitere Einstellungen"):
         c = st.columns(3)
         sv["pml_angle_cap_deg"] = float(c[0].number_input("PML-Auslegung: größter Winkel (°)", 30.0, 88.0, float(sv["pml_angle_cap_deg"]), 1.0, key="sv_cap",
@@ -660,9 +865,16 @@ with t_run:
         if mp_["triangulate"]:
             mp_["subdiv"] = int(c[1].slider("Unterteilung je Dreieck", 1, 6, int(mp_["subdiv"]), key="mp_sub",
                                             help="n-fache Unterteilung jedes Dreiecks; 3 bis 4 genügt für Polynomordnung 4 bis 5."))
+        if S.task == "scattering":
+            mp_["hs"] = st.checkbox("Auch Magnetfeld H und Poynting-Vektor S speichern", value=bool(mp_["hs"]), key="mp_hs",
+                                    disabled=not (FEATS.get("h_field") or lib.get("error")),
+                                    help="H = rot E / (iωμ₀) und der zeitgemittelte Energiefluss S = ½ Re(E × H*) (hpfem M15 F12), als weitere Größen "
+                                         "der Feldkarten. Kostet etwas Zeit und Platz.")
+        else:
+            st.caption("Bei Resonanzen werden die Modenfelder (E, auf max |E| = 1 normiert) für die gewählten Punkte gespeichert.")
     c = st.columns(2)
-    do_pscan = c[0].checkbox("Konvergenzstudie in p (statt des Durchlaufs)", key="do_pscan",
-                             help="Rechnet den ersten Punkt mit mehreren Polynomordnungen und zeigt Fehler gegen Freiheitsgrade.")
+    do_pscan = c[0].checkbox("Konvergenzstudie in p (statt des Durchlaufs)", key="do_pscan", disabled=S.task != "scattering",
+                             help="Rechnet den ersten Punkt mit mehreren Polynomordnungen und zeigt Fehler gegen Freiheitsgrade.") and S.task == "scattering"
     pscan_txt = c[1].text_input("Ordnungen", "2, 3, 4, 5", key="pscan_txt", disabled=not do_pscan)
 
     lam_lo, lam_hi = fr.wavelength_range(model)
@@ -691,40 +903,79 @@ with t_run:
         bad = [sd for sd in plan["sides"] if not sd["ok"]]
         st.warning("PML unterauflösend: " + "; ".join(f"{sd['side']}: Zellen {sd['h_mesh_nm']:.0f} nm, nötig ≤ {sd['h_needed_nm']:.1f} nm" for sd in bad) +
                    ". Die Rechnung läuft, die Ergebnisse sind dann nur auf etwa 10⁻³ verlässlich. „Vorschlag aus der Wellenlänge“ (Reiter 1) legt Dicke und Netz passend aus.")
-    if sv.get("engine") == "inplane_hp" and S.mesh_stats and S.mesh_stats.get("order") == 2:
+    if sv.get("engine", "").endswith("_hp") and S.mesh_stats and S.mesh_stats.get("order") == 2:
         st.warning("Das Netz hat gekrümmte Elemente (zweite Ordnung). hp-Verfeinerung gekrümmter Zellen ist ungetestet: Schlägt die Rechnung fehl, "
                    "gerade Ränder verwenden (Reiter 2: gekrümmte Elemente ausschalten) oder den konischen Löser nehmen.")
     if problems:
         st.error("Vor der Rechnung beheben: " + " | ".join(problems))
     if not mesh_ok:
         st.warning("Es gibt kein aktuelles Netz (Reiter 2: „Netz erzeugen“).")
-    if not (Path(repo) / "python").is_dir():
-        st.warning("Im hp-FEM-Ordner fehlt python/ (Seitenleiste).")
+    if lib.get("error"):
+        st.warning("hpfem lässt sich im eingestellten Python nicht laden (Seitenleiste): die Rechnung wird scheitern.")
     n_runs = n_pts if not do_pscan else len([v for v in pscan_txt.split(",") if v.strip()])
     st.caption(f"{n_runs} Rechnung(en)" + (f", etwa {est_dofs(S.mesh_stats['cells'], p_eff()):,} Freiheitsgrade je Rechnung".replace(",", ".") if S.mesh_stats else ""))
     if S.mesh_stats and est_dofs(S.mesh_stats["cells"], p_eff()) > 400000:
         st.warning("Über 400 000 Freiheitsgrade je Rechnung: das dauert lange und braucht viel Speicher.")
+    def prepare_job(folder):
+        """Copies the mesh into folder and writes the job file of the current settings."""
+        folder.mkdir(parents=True, exist_ok=True)
+        for f in ("mesh.msh", "mesh_plot.npz"):
+            shutil.copy(Path(S.mesh_dir) / f, folder / f)
+        P_ = model["period_nm"]
+        lay = fg.layout(model)
+        nx = int(round(P_ / mp_["res_nm"])) + 1
+        ny = min(int(round((lay["y_cover_top"] - lay["y_sub_bottom"]) / mp_["res_nm"])) + 1, 900)
+        maps = dict(enabled=bool(mp_["enabled"]), indices=[int(i) for i in mp_["indices"]], nx=nx, ny=ny,
+                    triangulate=bool(mp_["enabled"] and mp_["triangulate"] and S.task == "scattering"), subdivisions=int(mp_["subdiv"]), hs=bool(mp_["hs"]))
+        pscan = [int(v) for v in pscan_txt.split(",") if v.strip()] if do_pscan else None
+        job = fr.make_job(clean(model), dict(sv), maps, pscan, S.task, dict(S.resonance))
+        fr.write_job(folder, job)
+
+    c1, c2 = st.columns([1, 3])
+    if c1.button("Mit hpfem prüfen", key="check_btn", disabled=bool(problems) or not mesh_ok,
+                 help="Prüfungen der Bibliothek (hpfem.diagnostics: Netz, periodische Ränder, PML, Auflösung je Wellenlänge, Materialbereiche, "
+                      "streifende Ordnungen …) am ersten und letzten Punkt des Durchlaufs und die Speicherschätzung, ohne zu rechnen."):
+        with st.spinner("hpfem prüft das Modell …"):
+            try:
+                prepare_job(work / "check")
+                S.check_result = fr.run_check(py, repo, work / "check", int(threads))
+            except Exception as exc:
+                S.check_result = dict(error=str(exc))
+    chk = S.get("check_result")
+    if chk:
+        with c2:
+            if chk.get("error"):
+                st.error(chk["error"])
+                if chk.get("output"):
+                    st.code(chk["output"][-2000:])
+            else:
+                est = chk.get("estimate") or {}
+                if est:
+                    gib = est.get("total_bytes", 0) / 2 ** 30
+                    dofs_txt = f"{est.get('dofs', 0):,}".replace(",", ".")
+                    backend_txt = str(est.get("backend", "")).split(".")[-1]
+                    gib_txt = f"{gib:.2f}".replace(".", ",")
+                    (st.warning if gib > 8 else st.info)(f"Speicherschätzung (p = {chk.get('order')}): {dofs_txt} Freiheitsgrade, "
+                                                         f"{gib_txt} GiB für Matrix und Faktoren ({backend_txt})")
+                diags = chk.get("diagnostics")
+                if diags is None:
+                    st.info(chk.get("note", "Keine Prüfungen verfügbar."))
+                elif not diags:
+                    st.success("Die Prüfungen der Bibliothek finden nichts.")
+                else:
+                    for d in diags:
+                        (st.error if d["severity"] == "error" else st.warning if d["severity"] == "warning" else st.info)(
+                            f"**{d['code']}** ({d.get('where', '')}): {d['text']}" + (f"  \n*Hinweis:* {d['hint']}" if d.get("hint") else ""))
     if st.button("Rechnung starten", type="primary", key="run_btn", disabled=bool(problems) or not mesh_ok):
         try:
             run_dir = work / "run"
-            run_dir.mkdir(parents=True, exist_ok=True)
-            for f in ("mesh.msh", "mesh_plot.npz"):
-                shutil.copy(Path(S.mesh_dir) / f, run_dir / f)
-            P_ = model["period_nm"]
-            lay = fg.layout(model)
-            nx = int(round(P_ / mp_["res_nm"])) + 1
-            ny = min(int(round((lay["y_cover_top"] - lay["y_sub_bottom"]) / mp_["res_nm"])) + 1, 900)
-            maps = dict(enabled=bool(mp_["enabled"]), indices=[int(i) for i in mp_["indices"]], nx=nx, ny=ny,
-                        triangulate=bool(mp_["enabled"] and mp_["triangulate"]), subdivisions=int(mp_["subdiv"]))
-            pscan = [int(v) for v in pscan_txt.split(",") if v.strip()] if do_pscan else None
-            job = fr.make_job(clean(model), dict(sv), maps, pscan)
-            fr.write_job(run_dir, job)
+            prepare_job(run_dir)
             S.run_proc = fr.start_worker(py, repo, run_dir, int(threads))
-            S.run_dir, S.run_msg = str(run_dir), ""
+            S.run_dir, S.run_msg, S.cancel_requested, S.run_kind = str(run_dir), "", False, "periodic"
             st.rerun()
         except Exception as exc:
             st.error(f"Start fehlgeschlagen: {exc}")
-    if S.get("run_msg"):
+    if S.get("run_msg") and S.get("run_kind", "periodic") == "periodic":
         (st.success if S.get("run_ok", True) else st.error)(S.run_msg + " Die Ergebnisse stehen im Reiter 4.")
     if S.get("run_dir") and (Path(S.run_dir) / "log.txt").is_file():
         lw = fr.library_warnings(fr.read_log(S.run_dir))
@@ -758,15 +1009,65 @@ with t_res:
             arch.mkdir(parents=True, exist_ok=True)
             shutil.copytree(view, arch / name_arch, dirs_exist_ok=True)
             st.success(f"Gespeichert unter {arch / name_arch}")
-        df = fp.results_dataframe(res, mode)
+        meta = res["meta"]
+        task = meta.get("task", "scattering")
+        if fg.isolated(rmodel):
+            df = fp.iso_dataframe(res["points"], mode)
+        else:
+            df = fp.results_dataframe(res, mode) if task == "scattering" else fp.resonances_dataframe(res["points"])
         errs = [p for p in res["points"] if "error" in p] + [p for p in res.get("pscan", []) if "error" in p]
         for p in errs:
             st.error(f"Punkt {p.get('index', p.get('order'))}: {p['error']}")
-        meta = res["meta"]
-        st.caption(f"{meta['model']} · {ENGINE_SHORT.get(meta.get('engine', 'conical'), '')} · {SWEEP_MODES.get(mode, mode)} · "
-                   f"{'Start-' if meta.get('engine') == 'inplane_hp' else ''}p = {meta['order']} · {meta['cells']} Dreiecke (Startnetz) · "
-                   f"{len([p for p in res['points'] if 'error' not in p])} von {len(res['points'])} Punkten · Start {meta['started']}")
-        sub = st.tabs(["Spektrum / Ordnungen", "Feldkarten", "Schnitte", "Absorption", "Konvergenz in p", "hp-Adaptivität", "Tabelle und Export"])
+        if res.get("cancelled"):
+            st.warning("Die Rechnung wurde abgebrochen; es fehlen Punkte.")
+        vi_ = meta.get("version_info") or {}
+        st.caption(f"{meta['model']} · {'Resonanzen · ' if task == 'resonances' else ''}{ENGINE_SHORT.get(meta.get('engine', 'conical'), '')} · "
+                   f"{SWEEP_MODES.get(mode, mode)} · {'Start-' if meta.get('engine', '').endswith('_hp') else ''}p = {meta['order']} · "
+                   f"{meta['cells']} Dreiecke (Startnetz) · {len([p for p in res['points'] if 'error' not in p])} von {len(res['points'])} Punkten · "
+                   f"Start {meta['started']}" + (f" · hpfem {vi_['hpfem']}" if vi_.get("hpfem") else ""))
+    if res is not None and fg.isolated(rmodel):
+        iso_results(view, res, rmodel, mode)
+    elif res is not None and task == "resonances":
+        sub = st.tabs(["Resonanzen", "Modenfelder", "Tabelle und Export"])
+        ok_pts = [p for p in res["points"] if "error" not in p]
+        with sub[0]:
+            if not ok_pts:
+                st.info("Keine auswertbaren Punkte.")
+            else:
+                show_fig(fp.fig_resonances(ok_pts, mode), "resonanzen.png", "dl_res")
+                st.caption("Komplexe Eigenfrequenzen ω der offenen Zelle (PML oben und unten, Bloch-periodisch in x) nahe der Zielwellenlänge. "
+                           "λ_res = 2πc / Re ω, Güte Q = Re ω / (−2 Im ω). Ein Durchlauf über θ oder φ zeigt die Bänder über der Bloch-Wellenzahl. "
+                           "Moden mit sehr großem Q und Moden mit Im ω > 0 (Q < 0) sind oft Kasten- oder PML-Moden: am Modenfeld prüfen.")
+                bad = df[df["Q"] < 0] if "Q" in df else df.iloc[0:0]
+                if len(bad):
+                    st.warning(f"{len(bad)} Mode(n) mit Im ω > 0 (Q < 0): nicht physikalisch (PML- oder numerische Moden).")
+                table_show(df)
+        with sub[1]:
+            mfiles = sorted(view.glob("mode_*_*.npz"), key=lambda f_: tuple(int(v) for v in f_.stem.split("_")[1:]))
+            if not mfiles:
+                st.info("Für diese Rechnung wurden keine Modenfelder gespeichert (Reiter 3: „Feldkarten speichern“).")
+            else:
+                labels = {f_.name: f"Punkt {f_.stem.split('_')[1]}, Mode {f_.stem.split('_')[2]}" for f_ in mfiles}
+                c = st.columns(4)
+                pick_m = c[0].selectbox("Mode", [f_.name for f_ in mfiles], format_func=labels.get, key="mode_pick")
+                mp = fp.load_map(view / pick_m)
+                d = fp.derived(mp, rmodel)
+                qopts = [k for k in fp.available_quantities(d) if not k.startswith("Absorbierte")]
+                qkey = c[1].selectbox("Größe", qopts, key="mode_q")
+                periods = c[2].selectbox("Perioden", [1, 2, 3], key="mode_periods")
+                cmap = c[3].selectbox("Farbskala", ["automatisch", "inferno", "viridis", "magma", "turbo", "RdBu_r", "coolwarm"], key="mode_cm")
+                show_fig(fp.fig_map(mp, d, rmodel, qkey, periods=periods, cmap=None if cmap == "automatisch" else cmap), f"mode_{pick_m[:-4]}.png", "dl_mode")
+                st.caption(f"λ_res = {float(mp['lam_nm']):.2f} nm, Q = {float(mp['Q']):.4g}. Feld auf max |E| = 1 normiert (Phase willkürlich).")
+        with sub[2]:
+            if len(df):
+                table_show(df)
+                st.download_button("Resonanzen (CSV)", csv_bytes(df), file_name="resonanzen.csv", mime="text/csv", key="dl_res_csv")
+            st.download_button("Modell dieser Rechnung (JSON)", json.dumps(rmodel, indent=1, ensure_ascii=False).encode("utf-8"),
+                               file_name="modell_der_rechnung.json", mime="application/json", key="dl_model_res2")
+            st.caption(f"Ordner mit allen Dateien: {view}")
+    elif res is not None:
+        sub = st.tabs(["Spektrum / Ordnungen", "Feldkarten", "Schnitte", "Absorption", "Prüfung, Bilanz, Zeit", "Ableitungen", "Konvergenz in p",
+                       "hp-Adaptivität", "Tabelle und Export"])
         with sub[0]:
             if len(df) and "R" in df:
                 show_fig(fp.fig_spectrum(df, mode), "spektrum.png", "dl_spec")
@@ -780,58 +1081,9 @@ with t_res:
             else:
                 st.info("Keine auswertbaren Punkte.")
         with sub[1]:
-            maps = sorted(view.glob("maps_*.npz"), key=lambda p: int(p.stem.split("_")[1]))
-            if not maps:
-                st.info("Für diese Rechnung wurden keine Feldkarten gespeichert (Reiter 3: „Feldkarten speichern“).")
-            else:
-                c = st.columns(4)
-                which = c[0].selectbox("Punkt Nr.", [int(p.stem.split("_")[1]) for p in maps], key="map_which")
-                qkey = c[1].selectbox("Größe", list(fp.QUANTITIES), key="map_q")
-                periods = c[2].selectbox("Perioden", [1, 2, 3], key="map_periods")
-                cmap = c[3].selectbox("Farbskala", ["automatisch", "inferno", "viridis", "magma", "turbo", "RdBu_r", "coolwarm"], key="map_cm")
-                c = st.columns(4)
-                logs = c[0].checkbox("logarithmisch", key="map_log")
-                geo = c[1].checkbox("Geometrie einzeichnen", value=True, key="map_geo")
-                msh = c[2].checkbox("Netz einzeichnen", key="map_mesh")
-                vmax_txt = c[3].text_input("Obergrenze der Skala (leer = automatisch)", "", key="map_vmax")
-                pt = next(p for p in res["points"] if p.get("index") == which)
-                A_en = pt["A"] if pt.get("A") is not None else pt["A_incl_substrate"]
-                try:
-                    vmax = float(vmax_txt) if vmax_txt.strip() else None
-                except ValueError:
-                    vmax = None
-                tri_file = view / f"tri_{which}.npz"
-                rep = st.radio("Darstellung", ["Elemente (exakt)", "Raster"], horizontal=True, key="map_rep",
-                               help="Elemente: Feld auf den unterteilten Dreiecken des Netzes, Sprünge an Materialgrenzen scharf. Raster: reguläres Gitter.") \
-                    if tri_file.is_file() else "Raster"
-                if rep.startswith("Elemente"):
-                    tri = fp.load_tri(tri_file)
-                    show_fig(fp.fig_map_tri(tri, fp.derived_tri(tri, rmodel), rmodel, qkey, periods=periods, cmap=None if cmap == "automatisch" else cmap, vmax=vmax,
-                                            log=logs, show_geometry=geo), f"karte_{which}_elemente.png", "dl_map")
-                    if msh:
-                        st.caption("Das Netz lässt sich nur in der Rasterdarstellung einzeichnen.")
-                else:
-                    mp = fp.load_map(view / f"maps_{which}.npz")
-                    d = fp.derived(mp, rmodel, A_en)
-                    show_fig(fp.fig_map(mp, d, rmodel, qkey, periods=periods, cmap=None if cmap == "automatisch" else cmap, vmax=vmax, log=logs,
-                                        mesh_npz=(view / "mesh_plot.npz") if msh else None, show_geometry=geo), f"karte_{which}.png", "dl_map")
-                st.caption("Feld in den Achsen der Rechnung: x entlang der Periode, y vertikal, z entlang der Linien. Einfallende Welle mit Amplitude |E₀| = 1.")
+            maps_view(view, res, rmodel)
         with sub[2]:
-            maps = sorted(view.glob("maps_*.npz"), key=lambda p: int(p.stem.split("_")[1]))
-            if not maps:
-                st.info("Keine Feldkarten gespeichert.")
-            else:
-                c = st.columns(3)
-                which = c[0].selectbox("Punkt Nr.", [int(p.stem.split("_")[1]) for p in maps], key="cut_which")
-                axis = c[1].radio("Schnitt", ["vertikal (bei festem x)", "horizontal (bei festem y)"], key="cut_axis")
-                mp = fp.load_map(view / f"maps_{which}.npz")
-                d = fp.derived(mp, rmodel)
-                if axis.startswith("vertikal"):
-                    pos = c[2].slider("x (nm)", float(d["x"][0]), float(d["x"][-1]), float((d["x"][0] + d["x"][-1]) / 2), key="cut_x")
-                    show_fig(fp.fig_cut(d, rmodel, "y", pos), "schnitt_vertikal.png", "dl_cut")
-                else:
-                    pos = c[2].slider("y (nm)", float(d["y"][0]), float(d["y"][-1]), 0.0, key="cut_y")
-                    show_fig(fp.fig_cut(d, rmodel, "x", pos), "schnitt_horizontal.png", "dl_cut")
+            cuts_view(view, rmodel)
         with sub[3]:
             ok_pts = [p for p in res["points"] if "error" not in p]
             if not ok_pts:
@@ -878,22 +1130,70 @@ with t_res:
                         bars = (ab or {}).get("by_material") or (d or {}).get("regions_norm") or (d or {}).get("regions")
                         show_fig(fp.fig_absorption(bars, A_en), "absorption.png", "dl_abs")
         with sub[4]:
+            ok_pts = [p for p in res["points"] if "error" not in p]
+            est_ = meta.get("estimate")
+            if est_:
+                st.markdown(f"**Speicherschätzung der Bibliothek:** {est_.get('text', '')}")
+            diags_ = {}
+            for p in ok_pts:
+                for d_ in p.get("diagnostics") or []:
+                    diags_.setdefault((d_["severity"], d_["code"], d_["text"], d_.get("hint", "")), []).append(p["index"])
+            if diags_:
+                st.markdown("**Prüfungen der Bibliothek** (hpfem.diagnostics)")
+                for (sev, code_, text_, hint_), idx in diags_.items():
+                    (st.error if sev == "error" else st.warning if sev == "warning" else st.info)(
+                        f"**{code_}** (Punkt {', '.join(map(str, idx[:8]))}{' …' if len(idx) > 8 else ''}): {text_}" + (f"  \n*Hinweis:* {hint_}" if hint_ else ""))
+            elif any("diagnostics" in p for p in ok_pts):
+                st.success("Die Prüfungen der Bibliothek haben nichts gefunden.")
+            else:
+                st.info("Diese Rechnung lief ohne die Prüfungen der Bibliothek (Löser „hpfem.grating“ wählen).")
+            bdf = fp.balance_dataframe(ok_pts)
+            if len(bdf):
+                st.markdown("**Energiebilanz**")
+                table_show(bdf)
+                st.caption("R + T + A sollte 1 sein. A exakt: Volumenintegral der Joule-Wärme im physikalischen Gebiet. „A Bibliothek“ (hpfem.grating) zählt "
+                           "alle Zellen einschließlich der PML; bei verlustbehaftetem Substrat mit PML darunter ist sie deshalb größer. Die Flussbilanz der "
+                           "Bibliothek misst den Energiefluss durch die PML-Grenzen (nur auf Netzlinien parallel zu x); ihr relativer Rest ist ein "
+                           "unabhängiges Maß für den Diskretisierungsfehler.")
+            tdf = fp.timing_dataframe(ok_pts)
+            if len(tdf):
+                st.markdown("**Rechenzeit je Phase (s)**")
+                table_show(tdf)
+        with sub[5]:
+            jac_pts = [p for p in res["points"] if p.get("jacobian")]
+            if not jac_pts:
+                st.info("Keine Ableitungen in dieser Rechnung (Reiter 3: Löser „hpfem.grating“, „Ableitungen berechnen“).")
+            else:
+                show_fig(fp.fig_jacobian(jac_pts, mode), "ableitungen.png", "dl_jac")
+                wj = st.selectbox("Punkt Nr.", [p["index"] for p in jac_pts], key="jac_which") if len(jac_pts) > 1 else jac_pts[0]["index"]
+                jdf = fp.jacobian_dataframe(next(p for p in jac_pts if p["index"] == wj))
+                table_show(jdf)
+                st.download_button("Ableitungen (CSV)", csv_bytes(jdf), file_name=f"ableitungen_{wj}.csv", mime="text/csv", key="dl_jac_csv")
+                st.caption("Ableitungen der Beugungseffizienzen (hpfem.grating.jacobian, ein Lösungsschritt auf der behaltenen Faktorisierung): nach Re ε und Im ε "
+                           "jedes Materials in der Zelle (Formen und Schichten, nicht Einfallsmedium und Substrat), nach der Wellenlänge (je nm, bei festem ε, "
+                           "also ohne Materialdispersion), nach θ und bei vektorieller Rechnung nach φ (je Grad). Nützlich für Toleranzen, Fits und Optimierung: "
+                           "ΔR ≈ Σ dR/dp · Δp.")
+        with sub[6]:
             if res.get("pscan"):
                 show_fig(fp.fig_pscan(res["pscan"]), "konvergenz_p.png", "dl_pscan")
                 table_show(pd.DataFrame([{"p": p.get("order"), "Freiheitsgrade": p.get("dofs"), "Zeit (s)": p.get("time_s"), "R": p.get("R"), "T": p.get("T"), "A": p.get("A"),
                                           "Fehler": p.get("error")} for p in res["pscan"]]))
             else:
                 st.info("Keine Konvergenzstudie in dieser Rechnung (Reiter 3: „Konvergenzstudie in p“).")
-        with sub[5]:
+        with sub[7]:
             ad_pts = [p for p in res["points"] if p.get("steps")]
             if not ad_pts:
-                st.info("Keine hp-adaptive Rechnung in diesem Ergebnis (Reiter 3: Löser „In-Ebenen-Löser, hp-adaptiv“).")
+                st.info("Keine hp-adaptive Rechnung in diesem Ergebnis (Reiter 3: Löser „hpfem.grating, hp-adaptiv“ oder „In-Ebenen-Löser, hp-adaptiv“).")
             else:
                 wi = st.selectbox("Punkt Nr.", [p["index"] for p in ad_pts], key="ad_which") if len(ad_pts) > 1 else ad_pts[0]["index"]
                 pt = next(p for p in ad_pts if p["index"] == wi)
                 steps_ = pt["steps"]
                 table_show(pd.DataFrame([{"Schritt": s_["step"], "Dreiecke": s_["cells"], "Freiheitsgrade": s_["dofs"], "p max": s_["max_p"], "R": s_["R"], "T": s_["T"],
-                                          "η (Schätzer)": s_["eta"], "Änderung": s_["change"], "Zeit (s)": s_["time_s"]} for s_ in steps_]))
+                                          "η (Schätzer)": s_["eta"], "Fehler R₀ (DWR)": s_.get("goal_error"), "Änderung": s_["change"],
+                                          "Zeit (s)": s_["time_s"]} for s_ in steps_]))
+                if pt.get("estimator") == "dwr":
+                    st.caption("Zielorientierte Verfeinerung (DWR): markiert wurde nach dem Beitrag jedes Dreiecks zum Fehler der spiegelnden Reflexion R₀; "
+                               "„Fehler R₀“ ist dessen Schätzung.")
                 if steps_ and steps_[-1].get("stopped"):
                     st.warning("Die Schleife wurde vorzeitig beendet: Die periodischen Ränder des verfeinerten Netzes ließen sich nicht angleichen "
                                f"({steps_[-1]['stopped']}). Das Ergebnis ist das des letzten vollständigen Schritts.")
@@ -910,7 +1210,7 @@ with t_res:
                     show_fig(fp.fig_hpmesh(hp_file, rmodel, zoom=zoom), "hp_netz.png", "dl_hpmesh")
                     st.caption("Endnetz, jedes Dreieck nach seiner Polynomordnung gefärbt: kleine Dreiecke mit niedriger Ordnung an Singularitäten (Kanten, Ecken), "
                                "große Dreiecke mit hoher Ordnung im glatten Feld.")
-        with sub[6]:
+        with sub[8]:
             if len(df):
                 table_show(df)
                 st.download_button("Ergebnisse (CSV)", csv_bytes(df), file_name="ergebnisse.csv", mime="text/csv", key="dl_csv")
@@ -933,20 +1233,38 @@ Winkel θ gegen die Normale. Konvention exp(−iωt): Verlust bedeutet Im ε > 0
 die Struktur die Abweichung davon. Links und rechts gilt die Bloch-Randbedingung, oben (und bei verlustfreiem Substrat unten) absorbiert eine PML.
 Gemessen werden die reflektierten Beugungsordnungen im Einfallsraum und, bei verlustfreiem Substrat, die transmittierten im Substrat. Daraus: R, T und A = 1 − R − T.
 
-**Löser.** Der konische Löser rechnet TE, TM und beliebigen Azimut auf dem Netz mit fester Ordnung. Der In-Ebenen-Löser rechnet nur TM mit φ = 0, hat aber die
-hp-adaptive Verfeinerung: Fehlerschätzer je Dreieck, Dörfler-Markierung, dann h- oder p-Verfeinerung nach der Glattheit des Feldes. Das lohnt sich bei scharfen
-Metallecken (TM), wo gleichmäßige Netze nur langsam konvergieren. Beide Löser auf demselben Netz zu rechnen ist ein Test auf Übereinstimmung.
+**Löser.** *hpfem.grating* (empfohlen, hp-FEM ab 0.4) ist die Ein-Aufruf-Schnittstelle der Bibliothek auf dem konischen Löser: TE, TM und beliebiger
+Azimut, mit den Prüfungen der Bibliothek, dem skalaren E_z-Pfad (TE bei φ = 0, etwa ein Drittel der Freiheitsgrade), exakter Absorption, Flussbilanz,
+Rechenzeit je Phase, Abbruch zwischen den Phasen und auf Wunsch den Ableitungen (Jacobi-Matrix). *hpfem.grating, hp-adaptiv* verfeinert für TE, TM und
+konischen Einfall: Fehlerschätzer je Dreieck (Residuum oder zielorientiert/DWR für die spiegelnde Reflexion R₀), Dörfler-Markierung, h- oder
+p-Verfeinerung nach der Glattheit des Feldes. Das lohnt sich bei scharfen Metallecken, wo gleichmäßige Netze nur langsam konvergieren. Der *klassische
+konische Löser* ist der bisherige Aufbau dieser App (auch für ältere hpfem), der *In-Ebenen-Löser* rechnet nur TM mit φ = 0. Zwei Löser auf demselben
+Netz zu rechnen ist ein Test auf Übereinstimmung.
+
+**Resonanzen.** Die Aufgabe „Resonanzen“ sucht die Eigenmoden der offenen Zelle (hpfem.grating.resonances): komplexe Frequenz ω, Resonanzwellenlänge
+λ_res = 2πc / Re ω und Güte Q = Re ω / (−2 Im ω), nahe der Wellenlänge der Beleuchtung bei der Bloch-Wellenzahl des Einfallswinkels. Ein Durchlauf über
+θ oder φ ergibt die Bandstruktur. Moden mit Im ω > 0 oder extrem großem Q sind meist Moden der PML oder des Kastens.
+
+**Ableitungen.** Mit „Ableitungen berechnen“ liefert hpfem.grating.jacobian die Ableitungen aller Beugungseffizienzen nach Re ε und Im ε der Materialien in
+der Zelle, nach der Wellenlänge, nach θ und (vektoriell) nach φ, mit einem einzigen zusätzlichen Lösungsschritt. Grundlage für Toleranzanalysen, Fits
+und Optimierung.
+
+**Prüfen.** „Mit hpfem prüfen“ (Reiter 3) lässt die Bibliothek das Modell vor der Rechnung prüfen (Netz, periodische Ränder, PML, Auflösung je
+Wellenlänge, Materialbereiche, streifende Ordnungen, PEC-Wand im verlustbehafteten Substrat) und schätzt den Speicherbedarf.
 
 **Ränder und Substrat.** Ein verlustfreies Substrat braucht unten eine PML. Ein stark absorbierendes Substrat (Metall, Silizium im UV) kann unten mit einer Metallwand
 abgeschlossen werden, wenn die Tiefe mehrere Eindringtiefen beträgt. „Vorschlag aus der Wellenlänge“ setzt beides.
 
 **Genauigkeit.** Polynomordnung p (Reiter 3) und Netz (Reiter 2) zusammen bestimmen den Fehler. Die Konvergenzstudie in p zeigt, ob das Netz reicht.
-Scharfe Metallecken (TM) konvergieren langsam und brauchen hp-Verfeinerung, die dieser Löser noch nicht hat. Dort Verfeinerung an Grenzflächen verkleinern und p erhöhen.
+Scharfe Metallecken (TM) konvergieren langsam: dort hilft der hp-adaptive Löser, oder Verfeinerung an Grenzflächen verkleinern und p erhöhen. Die
+Flussbilanz der Bibliothek (Ergebnisse → Prüfung, Bilanz, Zeit) ist ein unabhängiges Maß für den Fehler.
 
 **Grenzen.** Eindimensional periodische Strukturen mit einer Zelle (keine Mehrfach-Formen mit Überlappungsproblemen über mehrere Perioden), Einfallsmedium verlustfrei,
 nichtmagnetische Materialien, Strukturen müssen in die Zelle passen (Formen dürfen über den Rand ragen und werden periodisch fortgesetzt).
 Tangential an eine Grenzfläche gelegte Kreise erzeugen verzerrte Dreiecke: die Form 1 bis 2 nm einsinken lassen.
 
-**Voraussetzungen.** App: `pip install streamlit numpy pandas matplotlib gmsh`. Rechnung: ein Python mit gebautem hpfem (Seitenleiste „Python mit hpfem“).
-Die Datei fem_worker.py liegt neben dieser App und wird vom hpfem-Python gestartet; sie braucht fem_materials.py im selben Ordner.
+**Voraussetzungen.** App: `pip install -r requirements.txt`. Rechnung: ein Python mit hpfem, als Wheel installiert (`pip install hpfem`, ab 0.4) oder
+selbst gebaut (Seitenleiste „Python mit hpfem“; ein Quellordner mit gebautem Modul kommt in den PYTHONPATH). Am einfachsten ist ein Python für beides.
+Die Datei fem_worker.py liegt neben dieser App und wird vom hpfem-Python gestartet; sie braucht fem_materials.py im selben Ordner. Die Seitenleiste zeigt
+Version und Funktionen der gefundenen Bibliothek; fehlt eine Funktion (ältere hpfem), bietet die App die klassischen Löser an.
 """)

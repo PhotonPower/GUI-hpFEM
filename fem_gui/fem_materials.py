@@ -55,7 +55,20 @@ def data_dir() -> Path | None:
     here = Path(__file__).resolve().parent
     for base in (Path.cwd(), here, here.parent):
         cands.append(base / "python" / "hpfem" / "data")
-    return next((c for c in cands if (c / "Si.csv").is_file()), None)
+    cands.append(_installed_data())
+    return next((c for c in cands if c is not None and (c / "Si.csv").is_file()), None)
+
+
+def _installed_data() -> Path | None:
+    """data/ of an hpfem installed in this Python (wheel), found without importing hpfem."""
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("hpfem")
+        if spec is not None and spec.submodule_search_locations:
+            return Path(list(spec.submodule_search_locations)[0]) / "data"
+    except Exception:
+        pass
+    return None
 
 
 def library_available() -> bool:
