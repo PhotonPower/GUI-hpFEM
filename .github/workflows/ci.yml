@@ -11,6 +11,12 @@ jobs:
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
+      - name: Materialdaten aus hp-FEM (nur lesen, nur python/hpfem/data)
+        uses: actions/checkout@v4
+        with:
+          repository: PhotonPower/hp-FEM
+          path: hp-FEM
+          sparse-checkout: python/hpfem/data
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -19,3 +25,5 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: pytest -q
+        env:
+          HPFEM_DATA: ${{ github.workspace }}/hp-FEM/python/hpfem/data
