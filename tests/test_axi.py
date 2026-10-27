@@ -170,3 +170,58 @@ def test_layer_mesh(tmp_path):
     lay = fa.layout(mem)
     assert xy[tri[mat == gaas]].reshape(-1, 2)[:, 0].max() == pytest.approx(lay["r_out"])   # the layer reaches the outer wall
     assert stats["source_box_nm"] > 0
+
+
+# ------------------------------------------------------------------------------------------------ far field of emitters (without hpfem)
+def _larmor_x(theta, p_total=2.0):
+    """Intensity [W/sr] of an x-directed dipole of power p_total at the azimuths phi_k of fem_axi.FAR_PHIS: 3 P / (8 pi) (1 - sin^2 theta cos^2 phi)."""
+    phis = [2 * np.pi * k / fa.FAR_PHIS for k in range(fa.FAR_PHIS)]
+    return np.array([3 * p_total / (8 * np.pi) * (1 - np.sin(theta) ** 2 * np.cos(phi) ** 2) for phi in phis])
+
+
+def test_far_pattern_metrics_isotropic_and_larmor():
+    th = np.linspace(0.0, np.pi, 721)
+    iso = np.full_like(th, 1.0 / (4 * np.pi))
+    r = fa.far_pattern_metrics(th, iso, 1.0, 1.0)
+    assert r["axis_gain"] == pytest.approx(1.0)
+    assert r["cone_fraction"][-1] == pytest.approx(1.0, abs=1e-5)
+    assert r["fraction_within_deg"]["30"] == pytest.approx((1 - np.cos(np.radians(30))) / 2, abs=1e-4)
+    assert r["half_angle_fwhm_deg"] is None
+    inten = _larmor_x(th)
+    r = fa.far_pattern_metrics(th, inten.mean(axis=0), 2.0, 2.0)
+    assert r["axis_gain"] == pytest.approx(1.5, abs=1e-6)
+    assert r["cone_fraction"][-1] == pytest.approx(1.0, abs=1e-5)
+
+
+def test_emitter_far_final_planes_and_balance():
+    import fem_axi_worker as fw
+
+    th = np.linspace(0.0, np.pi, 361)
+    raw = dict(theta=th, inten=_larmor_x(th), p_far=2.0, orders=[1, -1])
+    out = fw.emitter_far_final(raw, 2.0, 2.0, False)
+    assert out["balance"] == pytest.approx(1.0)
+    assert np.allclose(out["gain_xz_0"], 1.5 * np.cos(th) ** 2, atol=1e-9)          # E plane (phi = 0): dipole axis in the plane
+    assert np.allclose(out["gain_yz_0"], 1.5, atol=1e-9)                              # H plane: uniform
+    assert np.allclose(out["gain_xz_pi"], out["gain_xz_0"]) and np.allclose(out["gain_yz_pi"], out["gain_yz_0"])
+    assert out["axis_gain"] == pytest.approx(1.5, abs=1e-6)
+    json.dumps(out)
+    pt = dict(lam_nm=450.0, far=out)
+    import matplotlib.pyplot as plt
+    for log in (False, True):
+        fig = fa.fig_far_pattern(pt, log=log)
+        plt.close(fig)
+
+
+def test_box_in_background_lens_and_substrate():
+    base = fa.default_model()
+    base["parts"] = [dict(type="sphere", material="Glas", z_center=0.0, radius=500.0)]
+    base["emitter"]["z_nm"] = 700.0
+    ok, why = fa.box_in_background(base)
+    assert ok, why
+    sub = copy.deepcopy(base)
+    sub["substrate"] = "Glas"
+    assert not fa.box_in_background(sub)[0]
+    lay = base.copy()
+    lay["layers"] = [dict(material="Glas", z_bottom=-100.0, height=50.0)]
+    assert not fa.box_in_background(lay)[0]
+    # the box (r_max + margin/2, z_struct +- margin/2) encloses every part by construction: only substrate and layers can cross it

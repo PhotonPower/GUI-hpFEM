@@ -425,6 +425,18 @@ def tab_run(model, work, ctx):
                                      help="P_bulk aus derselben Quelle auf demselben Netz mit dem Emittermaterial überall, statt der Larmor-Formel: der "
                                           "Diskretisierungsfehler der schmalen Gauß-Quelle kürzt sich heraus. An einer GaAs-Membran gegen die exakte "
                                           "Sommerfeld-Lösung: Abweichung 1,4·10⁻³ statt 5,7·10⁻³ (σ = 10 nm, p = 3).")
+    if S.ax_task == "emitter":
+        c2 = st.columns([3, 1])
+        sv["far_field"] = c2[0].checkbox("Fernfeld berechnen (Winkelverteilung der Abstrahlung)", value=bool(sv.get("far_field", False)), key="ax_far_field",
+                                         help="Nah-zu-Fern-Transformation (Stratton-Chu, hpfem.axisymmetric_far_field) auf der geschlossenen Messbox um die Struktur, "
+                                              "die ganz im Umgebungsmedium liegen muss (kein Substrat, keine durchlaufenden Schichten). Der Dipol senkrecht zur Achse "
+                                              "braucht eine zweite Lösung (m = -1): doppelte Rechenzeit je Wellenlänge.")
+        sv["far_theta_samples"] = int(c2[1].number_input("Winkel", 181, 3601, int(sv.get("far_theta_samples", 721)), step=180, key="ax_far_n",
+                                                         disabled=not sv["far_field"], help="Stützstellen von 0 bis 180° (721: Schritt 0,25°; schmale Strahlen brauchen feine Schritte)."))
+        if sv["far_field"]:
+            ok_box, why_box = fa.box_in_background(model)
+            if not ok_box:
+                st.warning("Fernfeld nicht möglich: " + why_box)
     errs = [t for lvl, t in fa.validate(model, S.ax_task) if lvl == "error"]
     mesh = S.ax_mesh
     mesh_ok = bool(mesh and not mesh.get("err") and mesh["sig"] == signature(model, S.ax_ms))
@@ -450,7 +462,8 @@ def tab_run(model, work, ctx):
             for f in ("mesh.msh", "mesh_plot.npz"):
                 shutil.copy(Path(mesh["dir"]) / f, run_dir / f)
             job = dict(model=copy.deepcopy(model), task=S.ax_task, solver=dict(order=sv["order"], backend=sv["backend"], bulk_fem=bool(sv.get("bulk_fem"))), subdivisions=sv["subdivisions"],
-                       fields=bool(sv["fields"]), field_at_centre=bool(sv["fields"]))
+                       fields=bool(sv["fields"]), field_at_centre=bool(sv["fields"]),
+                       far_field=bool(sv.get("far_field")) and S.ax_task == "emitter", far_theta_samples=int(sv.get("far_theta_samples", 721)))
             (run_dir / "job.json").write_text(json.dumps(job, indent=1), encoding="utf-8")
             S.run_proc = fr.start_worker(ctx["py"], ctx["repo"], run_dir, int(ctx["threads"]), script="fem_axi_worker.py")
             S.run_dir, S.run_msg, S.cancel_requested, S.run_kind = str(run_dir), "", False, "axi"
@@ -532,7 +545,11 @@ def tab_results(work):
             st.info(f"Resonanz (m = {rsn['m']}): λ = {chosen['lam_nm']:.3f} nm, Q = {chosen['Q']:.4g}, Linienbreite {chosen['lam_nm'] / chosen['Q']:.3f} nm. "
                     "Das Spektrum liegt symmetrisch darum.")
         has_modal = any(p.get("modal") for p in ok)
-        sub = st.tabs(["Purcell und Abstrahlung", "Feld", "Tabelle und Export"] + (["Modenzerlegung"] if has_modal else []))
+        has_far = any(p.get("far") for p in ok)
+        sub = st.tabs(["Purcell und Abstrahlung", "Feld", "Tabelle und Export"] + (["Modenzerlegung"] if has_modal else []) + (["Fernfeld"] if has_far else []))
+        if has_far:
+            with sub[3 + int(has_modal)]:
+                far_results(ok)
         if has_modal:
             with sub[3]:
                 ui.show_fig(fa.fig_modal(ok, chosen), "modenzerlegung.png", "ax_dl_modal")
@@ -577,6 +594,34 @@ def tab_results(work):
             ui.table_show(df)
             st.download_button("Spektrum (CSV)", ui.csv_bytes(df), file_name="purcell.csv", mime="text/csv", key="ax_dl_csv")
             st.caption(f"Ordner: {view}")
+
+
+def far_results(ok):
+    fp = [p for p in ok if p.get("far")]
+    lab = {p["index"]: f"Punkt {p['index']}: λ = {p['lam_nm']:.3f} nm, F_P = {p['purcell']:.3g}" for p in fp}
+    pick = st.selectbox("Wellenlänge", list(lab), format_func=lab.get, index=len(fp) // 2, key="ax_far_pick")
+    pt = next(p for p in fp if p["index"] == pick)
+    far = pt["far"]
+    log = st.checkbox("Gewinn in dB", value=False, key="ax_far_log")
+    ui.show_fig(fa.fig_far_pattern(pt, log=log), f"fernfeld_{pick}.png", "ax_dl_far")
+    c = st.columns(4)
+    c[0].metric("Gewinn auf der Achse", f"{far['axis_gain']:.3g}" if far.get("axis_gain") is not None else "–",
+                help="I(0) / (P_bulk / 4π): Intensität in +z-Richtung gegenüber dem isotropen Strahler gleicher Leistung im homogenen Medium. Ein freier "
+                     "Dipol hat höchstens 1,5.")
+    c[1].metric("Halbwertshalbwinkel", f"{far['half_angle_fwhm_deg']:.2f}°" if far.get("half_angle_fwhm_deg") is not None else "–",
+                help="Winkel, bei dem die azimutal gemittelte Intensität auf die Hälfte des Wertes auf der Achse fällt.")
+    c[2].metric("Fernfeldleistung / Fluss", f"{far['balance']:.4f}" if far.get("balance") is not None else "–",
+                help="Leistung aus dem Fernfeld (Integral von |F|²/2Z) durch den Fluss durch die Fläche um den Emitter. Sollte bei verlustfreier Struktur "
+                     "nahe 1 liegen (Abweichungen: Diskretisierung, Verluste, PML).")
+    c[3].metric("Leistung in 10°-Kegel", f"{far['fraction_within_deg'].get('10', float('nan')):.3f}")
+    st.caption("Fernfeld per Nah-zu-Fern-Transformation (Stratton–Chu) auf der geschlossenen Messbox (hpfem.axisymmetric_far_field, Summe der Azimutordnungen "
+               "mit superpose_far_field). Der Dipol zeigt in x-Richtung: E-Ebene = x–z, H-Ebene = y–z. Der Gewinn bezieht sich auf P_bulk/4π desselben "
+               "Dipols im unbegrenzten Umgebungsmedium (mit derselben Gauß-Glättung). Der Anteil „in den Kegel“ ist auf die gesamte vom Dipol abgegebene "
+               "Leistung bezogen.")
+    th = np.degrees(np.asarray(far["theta"]))
+    df = pd.DataFrame({"θ (°)": th, "Gewinn x-z (φ=0)": far["gain_xz_0"], "Gewinn x-z (φ=180°)": far["gain_xz_pi"], "Gewinn y-z (φ=90°)": far["gain_yz_0"],
+                       "Gewinn y-z (φ=270°)": far["gain_yz_pi"], "Gewinn azimutal gemittelt": far["gain_mean"], "Anteil im Kegel": far["cone_fraction"]})
+    st.download_button("Fernfeld (CSV)", ui.csv_bytes(df), file_name=f"fernfeld_{pick}.csv", mime="text/csv", key="ax_dl_far_csv")
 
 
 def scattering_results(view, res, model):

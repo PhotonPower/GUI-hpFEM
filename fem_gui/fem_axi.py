@@ -583,6 +583,83 @@ def fig_pattern(pt):
     return fig
 
 
+# ------------------------------------------------------------------------------------------------------------ far field of emitters
+FAR_PHIS = 8                                   # azimuths for the mean over phi (orders +-1 give |F|^2 harmonics up to 2: 8 samples integrate it exactly)
+
+
+def box_in_background(model, n=60):
+    """(ok, text): lies the closed measurement box (top / bottom plane, side) completely in the background medium? The near-to-far transform
+    on it is only valid then (homogeneous, lossless medium on the surface). Substrate and radially infinite layers run through it."""
+    if model.get("substrate") or model.get("layers"):
+        return False, "Substrat oder radial unendliche Schichten laufen durch die Messbox: das Fernfeld (Stratton-Chu im homogenen Hintergrund) ist dann nicht definiert."
+    lay = layout(model)
+    r = np.linspace(0.0, lay["r_plane"], n)
+    z = np.linspace(lay["z_plane_bottom"], lay["z_plane_top"], n)
+    pts = [(rr, lay["z_plane_top"]) for rr in r] + [(rr, lay["z_plane_bottom"]) for rr in r] + [(lay["r_plane"], zz) for zz in z]
+    bad = [(rr, zz) for rr, zz in pts if material_at(model, rr, zz) != model["background"]]
+    if bad:
+        return False, (f"Die Messbox (r <= {lay['r_plane']:g} nm, z = {lay['z_plane_bottom']:g} ... {lay['z_plane_top']:g} nm) schneidet die Struktur "
+                       f"(z. B. bei r = {bad[0][0]:g}, z = {bad[0][1]:g} nm): Abstand zur PML (Gebiet, Reiter 1) vergrößern.")
+    return True, ""
+
+
+def far_pattern_metrics(theta, intensity_mean, p_total, p_bulk, cones_deg=(2.0, 5.0, 10.0, 20.0, 30.0)):
+    """Metrics of an emitter pattern from the azimuthal mean of the intensity [W/sr] on theta in [0, pi] (ascending):
+    cumulative power fraction within the half-angle theta (power / p_total), on-axis gain relative to the isotropic emitter of the same
+    medium (I(0) / (p_bulk / 4 pi)), half-angle at which the mean intensity falls to half of its on-axis value (None if it does not),
+    and the collected fractions at some half-angles."""
+    th = np.asarray(theta, float)
+    I = np.asarray(intensity_mean, float)
+    seg = 0.5 * (I[1:] * np.sin(th[1:]) + I[:-1] * np.sin(th[:-1])) * np.diff(th)
+    cum = np.concatenate([[0.0], np.cumsum(seg)]) * 2.0 * np.pi
+    frac = cum / p_total if p_total else np.full_like(cum, np.nan)
+    gain0 = float(I[0] / (p_bulk / (4.0 * np.pi))) if p_bulk else None
+    half = None
+    if I[0] > 0:
+        below = np.nonzero(I < 0.5 * I[0])[0]
+        if len(below):
+            j = int(below[0])
+            t0, t1, i0, i1 = th[j - 1], th[j], I[j - 1], I[j]
+            half = float(np.degrees(t0 + (t1 - t0) * (i0 - 0.5 * I[0]) / (i0 - i1))) if j > 0 and i0 != i1 else float(np.degrees(th[j]))
+    at = {f"{c:g}": float(np.interp(np.radians(c), th, frac)) for c in cones_deg}
+    return dict(cone_fraction=frac.tolist(), axis_gain=gain0, half_angle_fwhm_deg=half, fraction_within_deg=at, power_total=float(cum[-1]))
+
+
+def fig_far_pattern(pt, log=False, figsize=(11, 5)):
+    """Far field of the emitter: polar plot of the gain dP/dOmega / (P_bulk / 4 pi) in the E plane (x-z, dipole along x) and the H plane (y-z),
+    and the power collected within the half-angle theta."""
+    import matplotlib.pyplot as plt
+
+    far = pt["far"]
+    th = np.asarray(far["theta"])
+    fig = plt.figure(figsize=figsize)
+    ax = fig.add_subplot(1, 2, 1, projection="polar")
+    axial = far.get("orientation") == "axial"
+    planes = ((("xz", "x-z (E-Ebene des Dipols)", "C0"), ("yz", "y-z (H-Ebene)", "C1")) if not axial else (("xz", "Meridianebene (alle gleich)", "C0"),))
+    for key, lab, col in planes:
+        a, b = np.asarray(far[f"gain_{key}_0"]), np.asarray(far[f"gain_{key}_pi"])
+        ang = np.concatenate([th, 2 * np.pi - th[::-1]])
+        val = np.concatenate([a, b[::-1]])
+        if log:
+            val = 10 * np.log10(np.maximum(val, 1e-6))
+        ax.plot(ang, val, color=col, label=lab)
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+    ax.set_title(("Gewinn in dB" if log else "Gewinn") + f" dP/dΩ / (P_bulk/4π) bei λ = {pt['lam_nm']:.1f} nm; 0° = +z", fontsize=9)
+    ax.legend(fontsize=8, loc="lower left", bbox_to_anchor=(-0.15, -0.14))
+    bx = fig.add_subplot(1, 2, 2)
+    bx.plot(np.degrees(th), np.asarray(far["cone_fraction"]), color="C2")
+    bx.set_xlim(0, 90)
+    bx.set_ylim(0, max(1.0, float(np.nanmax(far["cone_fraction"][: len(th) // 2 + 1])) * 1.02))
+    bx.set_xlabel("Halbwinkel θ (°) um die +z-Achse")
+    bx.set_ylabel("Anteil der emittierten Leistung P(<θ) / P")
+    bx.grid(alpha=0.3)
+    bx.set_title("In den Kegel gesammelte Leistung", fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+
 SCATTER_QUANTITIES = {"|E| gesamt": ("tot", "abs"), "|E| Streufeld": ("sca", "abs"), "|E_x| gesamt": ("tot", 0), "|E_y| gesamt": ("tot", 1),
                       "|E_z| gesamt": ("tot", 2), "Re E_x gesamt": ("tot", "r0"), "Re E_y gesamt": ("tot", "r1"), "Re E_z gesamt": ("tot", "r2")}
 
