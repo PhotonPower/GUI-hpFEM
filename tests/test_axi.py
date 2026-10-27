@@ -225,3 +225,66 @@ def test_box_in_background_lens_and_substrate():
     lay["layers"] = [dict(material="Glas", z_bottom=-100.0, height=50.0)]
     assert not fa.box_in_background(lay)[0]
     # the box (r_max + margin/2, z_struct +- margin/2) encloses every part by construction: only substrate and layers can cross it
+
+
+# ------------------------------------------------------------------------------------------------ far field on a layer stack (without hpfem)
+def _stack_model(layers, substrate=None):
+    m = fa.default_model()
+    m["materials"].update({"GaAs": {"type": "index", "n": 3.53, "k": 0.0}, "AlAs": {"type": "index", "n": 2.95, "k": 0.0}})
+    m["parts"], m["layers"], m["substrate"] = [], layers, substrate
+    return m
+
+
+def test_stack_layers_membrane_substrate_and_merge():
+    assert fa.stack_layers(fa.default_model()) is None
+    mem = fa.stack_layers(_stack_model([dict(material="GaAs", z_bottom=0.0, height=200.0)]))      # membrane in air
+    assert mem["top_nm"] == 200.0 and mem["layers"] == [("GaAs", 200.0)] and mem["substrate"] == "Luft"
+    sub = fa.stack_layers(_stack_model([], "Glas"))                                                 # bare substrate: no layers
+    assert sub["top_nm"] == 0.0 and sub["layers"] == [] and sub["substrate"] == "Glas"
+    two = fa.stack_layers(_stack_model([dict(material="GaAs", z_bottom=0.0, height=100.0), dict(material="AlAs", z_bottom=100.0, height=50.0),
+                                        dict(material="AlAs", z_bottom=150.0, height=25.0)], "Glas"))
+    assert two["top_nm"] == 175.0 and two["layers"] == [("AlAs", 75.0), ("GaAs", 100.0)] and two["substrate"] == "Glas"   # same neighbours merged
+    gap = fa.stack_layers(_stack_model([dict(material="GaAs", z_bottom=100.0, height=50.0)], "Glas"))                  # air gap above the substrate
+    assert gap["layers"] == [("GaAs", 50.0), ("Luft", 100.0)] and gap["top_nm"] == 150.0
+    total = sum(t for _, t in gap["layers"])
+    assert gap["top_nm"] - total == pytest.approx(0.0)                                                                  # lowest interface at z = 0
+    for name, m in fa.presets().items():
+        if m.get("layers") or m.get("substrate"):
+            st = fa.stack_layers(m)
+            assert st["substrate"] in m["materials"] and all(t > 0 for _, t in st["layers"]), name
+
+
+def test_far_field_plan_modes():
+    base = fa.default_model()
+    base["parts"] = [dict(type="sphere", material="Glas", z_center=0.0, radius=500.0)]
+    base["emitter"]["z_nm"] = 700.0
+    assert fa.far_field_plan(base)[0] == "homogeneous"
+    sub = copy.deepcopy(base)
+    sub["substrate"] = "Glas"
+    mode, text = fa.far_field_plan(sub)
+    assert mode == "layered" and "Substrat" in text
+
+
+def test_emitter_far_final_layered_fractions_and_down_cone():
+    import fem_axi_worker as fw
+
+    up = np.linspace(0.0, np.pi / 2 - 1e-6, 181)
+    dn = np.linspace(np.pi / 2 + 1e-6, np.pi, 181)
+    th = np.concatenate([up, dn])
+    inten = np.array([np.where(th < np.pi / 2, 2.0, 1.0)] * fa.FAR_PHIS) / (4 * np.pi)       # 2/(4 pi) up, 1/(4 pi) down: powers 1 and 0.5
+    raw = dict(theta=th, inten=inten, p_far=1.5, orders=[1, -1], layered=True, p_up=1.0, p_down=0.5, down_available=True)
+    out = fw.emitter_far_final(raw, 2.0, 2.0, False)
+    assert out["layered"] and out["frac_up"] == pytest.approx(0.5) and out["frac_down"] == pytest.approx(0.25)
+    assert out["frac_guided_absorbed"] == pytest.approx(0.25)
+    assert out["axis_gain"] == pytest.approx(2.0 / (4 * np.pi) / (2.0 / (4 * np.pi)), rel=1e-6)                 # I(0) / (P_bulk / 4 pi) = 1
+    assert out["axis_gain_down"] == pytest.approx(0.5 * out["axis_gain"], rel=1e-6)
+    assert len(out["cone_fraction_down"]) == len(th)
+    json.dumps(out)
+    import matplotlib.pyplot as plt
+    fig = fa.fig_far_pattern(dict(lam_nm=450.0, far=out))
+    plt.close(fig)
+    # lossy substrate: only the upper half
+    raw2 = dict(theta=up, inten=inten[:, :181], p_far=1.0, orders=[1, -1], layered=True, p_up=1.0, p_down=0.0, down_available=False)
+    out2 = fw.emitter_far_final(raw2, 2.0, 2.0, False)
+    assert "cone_fraction_down" not in out2 and out2["down_available"] is False
+    plt.close(fa.fig_far_pattern(dict(lam_nm=450.0, far=out2)))
