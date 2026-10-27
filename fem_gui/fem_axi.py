@@ -591,7 +591,7 @@ def box_in_background(model, n=60):
     """(ok, text): lies the closed measurement box (top / bottom plane, side) completely in the background medium? The near-to-far transform
     on it is only valid then (homogeneous, lossless medium on the surface). Substrate and radially infinite layers run through it."""
     if model.get("substrate") or model.get("layers"):
-        return False, "Substrat oder radial unendliche Schichten laufen durch die Messbox: das Fernfeld (Stratton-Chu im homogenen Hintergrund) ist dann nicht definiert."
+        return False, "Substrat oder radial unendliche Schichten laufen durch die Messbox: die Transformation im homogenen Hintergrund (Stratton-Chu) ist dann nicht definiert; das Fernfeld geht über den Schichtstapel (Reziprozität)."
     lay = layout(model)
     r = np.linspace(0.0, lay["r_plane"], n)
     z = np.linspace(lay["z_plane_bottom"], lay["z_plane_top"], n)
@@ -601,6 +601,47 @@ def box_in_background(model, n=60):
         return False, (f"Die Messbox (r <= {lay['r_plane']:g} nm, z = {lay['z_plane_bottom']:g} ... {lay['z_plane_top']:g} nm) schneidet die Struktur "
                        f"(z. B. bei r = {bad[0][0]:g}, z = {bad[0][1]:g} nm): Abstand zur PML (Gebiet, Reiter 1) vergrößern.")
     return True, ""
+
+
+def stack_layers(model):
+    """The planar background (substrate, radially infinite layers) as a layer stack for the far field by reciprocity, from top to bottom:
+    dict(top_nm, layers = [(material, thickness_nm), ...], substrate = material); None without substrate and layers. The incidence medium
+    above `top_nm` is the background; adjacent regions of the same material are merged, and regions equal to the background (at the top) or to the
+    substrate (at the bottom) are absorbed into them."""
+    if not model.get("substrate") and not model.get("layers"):
+        return None
+    bounds = set()
+    if model.get("substrate"):
+        bounds.add(0.0)
+    for ly in model.get("layers", []):
+        bounds.update((round(float(ly["z_bottom"]), 6), round(float(ly["z_bottom"]) + float(ly["height"]), 6)))
+    B = sorted(bounds, reverse=True)
+    regions = [[base_material(model, 0.5 * (B[i] + B[i + 1])), B[i] - B[i + 1]] for i in range(len(B) - 1)]
+    substrate = base_material(model, B[-1] - 1.0)
+    top = B[0]
+    while regions and regions[0][0] == model["background"]:           # a region of the cover medium at the top belongs to the cover
+        top -= regions[0][1]
+        regions.pop(0)
+    while regions and regions[-1][0] == substrate:                    # and one of the substrate material at the bottom to the substrate
+        regions.pop()
+    merged = []
+    for name, t in regions:
+        if merged and merged[-1][0] == name:
+            merged[-1][1] += t
+        else:
+            merged.append([name, t])
+    return dict(top_nm=float(top), layers=[(n, float(t)) for n, t in merged], substrate=substrate)
+
+
+def far_field_plan(model):
+    """(mode, text) of the far field of an emitter: "homogeneous" (near-to-far transform on the box in the background medium), "layered" (substrate
+    and layers: by reciprocity with the plane waves of the stack, hpfem.axisymmetric_layered_far_field) or None with the reason."""
+    if model.get("substrate") or model.get("layers"):
+        st = stack_layers(model)
+        desc = " | ".join([model["background"]] + [f"{n} {t:g} nm" for n, t in st["layers"]] + [f"{st['substrate']} (Substrat)"])
+        return "layered", f"Schichtstapel von oben nach unten: {desc}; Oberkante bei z = {st['top_nm']:g} nm."
+    ok, why = box_in_background(model)
+    return ("homogeneous", "") if ok else (None, why)
 
 
 def far_pattern_metrics(theta, intensity_mean, p_total, p_bulk, cones_deg=(2.0, 5.0, 10.0, 20.0, 30.0)):
@@ -627,7 +668,7 @@ def far_pattern_metrics(theta, intensity_mean, p_total, p_bulk, cones_deg=(2.0, 
 
 def fig_far_pattern(pt, log=False, figsize=(11, 5)):
     """Far field of the emitter: polar plot of the gain dP/dOmega / (P_bulk / 4 pi) in the E plane (x-z, dipole along x) and the H plane (y-z),
-    and the power collected within the half-angle theta."""
+    and the power collected within the half-angle around +z (up) and, if available, around -z (down)."""
     import matplotlib.pyplot as plt
 
     far = pt["far"]
@@ -648,16 +689,19 @@ def fig_far_pattern(pt, log=False, figsize=(11, 5)):
     ax.set_title(("Gewinn in dB" if log else "Gewinn") + f" dP/dΩ / (P_bulk/4π) bei λ = {pt['lam_nm']:.1f} nm; 0° = +z", fontsize=9)
     ax.legend(fontsize=8, loc="lower left", bbox_to_anchor=(-0.15, -0.14))
     bx = fig.add_subplot(1, 2, 2)
-    bx.plot(np.degrees(th), np.asarray(far["cone_fraction"]), color="C2")
+    bx.plot(np.degrees(th), np.asarray(far["cone_fraction"]), color="C2", label="nach oben (+z)")
+    if far.get("cone_fraction_down") is not None:
+        bx.plot(np.degrees(np.pi - th[::-1]), np.asarray(far["cone_fraction_down"]), color="C3", label="nach unten (−z)")
     bx.set_xlim(0, 90)
-    bx.set_ylim(0, max(1.0, float(np.nanmax(far["cone_fraction"][: len(th) // 2 + 1])) * 1.02))
-    bx.set_xlabel("Halbwinkel θ (°) um die +z-Achse")
+    top = max(float(np.nanmax(far["cone_fraction"][: len(th) // 2 + 1])), float(np.nanmax(far["cone_fraction_down"][: len(th) // 2 + 1])) if far.get("cone_fraction_down") is not None else 0.0)
+    bx.set_ylim(0, 1.02 if not far.get("layered") else max(top * 1.05, 1e-3))                  # on a stack part of the power is guided or absorbed
+    bx.set_xlabel("Halbwinkel um die Achse (°)")
     bx.set_ylabel("Anteil der emittierten Leistung P(<θ) / P")
     bx.grid(alpha=0.3)
+    bx.legend(fontsize=8)
     bx.set_title("In den Kegel gesammelte Leistung", fontsize=9)
     fig.tight_layout()
     return fig
-
 
 
 SCATTER_QUANTITIES = {"|E| gesamt": ("tot", "abs"), "|E| Streufeld": ("sca", "abs"), "|E_x| gesamt": ("tot", 0), "|E_y| gesamt": ("tot", 1),

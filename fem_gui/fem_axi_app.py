@@ -434,9 +434,12 @@ def tab_run(model, work, ctx):
         sv["far_theta_samples"] = int(c2[1].number_input("Winkel", 181, 3601, int(sv.get("far_theta_samples", 721)), step=180, key="ax_far_n",
                                                          disabled=not sv["far_field"], help="Stützstellen von 0 bis 180° (721: Schritt 0,25°; schmale Strahlen brauchen feine Schritte)."))
         if sv["far_field"]:
-            ok_box, why_box = fa.box_in_background(model)
-            if not ok_box:
-                st.warning("Fernfeld nicht möglich: " + why_box)
+            mode_far, text_far = fa.far_field_plan(model)
+            if mode_far is None:
+                st.warning("Fernfeld nicht möglich: " + text_far)
+            elif mode_far == "layered":
+                st.info("Substrat oder Schichten: das Fernfeld wird nach Reziprozität mit den ebenen Wellen des Stapels berechnet (hpfem.axisymmetric_layered_far_field), "
+                        "getrennt nach oben (Umgebungsmedium) und unten (Substrat). " + text_far + " Ein verlustbehaftetes Substrat hat kein Fernfeld nach unten.")
     errs = [t for lvl, t in fa.validate(model, S.ax_task) if lvl == "error"]
     mesh = S.ax_mesh
     mesh_ok = bool(mesh and not mesh.get("err") and mesh["sig"] == signature(model, S.ax_ms))
@@ -604,20 +607,30 @@ def far_results(ok):
     far = pt["far"]
     log = st.checkbox("Gewinn in dB", value=False, key="ax_far_log")
     ui.show_fig(fa.fig_far_pattern(pt, log=log), f"fernfeld_{pick}.png", "ax_dl_far")
+    layered = bool(far.get("layered"))
     c = st.columns(4)
-    c[0].metric("Gewinn auf der Achse", f"{far['axis_gain']:.3g}" if far.get("axis_gain") is not None else "–",
+    c[0].metric("Gewinn auf der Achse (+z)", f"{far['axis_gain']:.3g}" if far.get("axis_gain") is not None else "–",
                 help="I(0) / (P_bulk / 4π): Intensität in +z-Richtung gegenüber dem isotropen Strahler gleicher Leistung im homogenen Medium. Ein freier "
                      "Dipol hat höchstens 1,5.")
     c[1].metric("Halbwertshalbwinkel", f"{far['half_angle_fwhm_deg']:.2f}°" if far.get("half_angle_fwhm_deg") is not None else "–",
                 help="Winkel, bei dem die azimutal gemittelte Intensität auf die Hälfte des Wertes auf der Achse fällt.")
-    c[2].metric("Fernfeldleistung / Fluss", f"{far['balance']:.4f}" if far.get("balance") is not None else "–",
-                help="Leistung aus dem Fernfeld (Integral von |F|²/2Z) durch den Fluss durch die Fläche um den Emitter. Sollte bei verlustfreier Struktur "
-                     "nahe 1 liegen (Abweichungen: Diskretisierung, Verluste, PML).")
-    c[3].metric("Leistung in 10°-Kegel", f"{far['fraction_within_deg'].get('10', float('nan')):.3f}")
+    if layered:
+        c[2].metric("abgestrahlt oben / unten", f"{far['frac_up']:.3f} / {far['frac_down']:.3f}" if far.get("frac_up") is not None else "–",
+                    help="Anteil der vom Dipol abgegebenen Leistung, der im Fernfeld in das Umgebungsmedium (oben) und in das Substrat (unten) gelangt.")
+        c[3].metric("geführt + absorbiert", f"{far['frac_guided_absorbed']:.3f}" if far.get("frac_guided_absorbed") is not None else "–",
+                    help="Rest: 1 − (oben + unten). Geführte Moden der Schichten (laufen in die PML) und Absorption in verlustbehafteten Schichten.")
+        if not far.get("down_available", True):
+            st.info("Das Substrat ist verlustbehaftet: es gibt kein Fernfeld nach unten, die Diagramme zeigen nur die obere Halbebene.")
+    else:
+        c[2].metric("Fernfeldleistung / Fluss", f"{far['balance']:.4f}" if far.get("balance") is not None else "–",
+                    help="Leistung aus dem Fernfeld (Integral von |F|²/2Z) durch den Fluss durch die Fläche um den Emitter. Sollte bei verlustfreier Struktur "
+                         "nahe 1 liegen (Abweichungen: Diskretisierung, Verluste, PML).")
+        c[3].metric("Leistung in 10°-Kegel", f"{far['fraction_within_deg'].get('10', float('nan')):.3f}")
     st.caption("Fernfeld per Nah-zu-Fern-Transformation (Stratton–Chu) auf der geschlossenen Messbox (hpfem.axisymmetric_far_field, Summe der Azimutordnungen "
                "mit superpose_far_field). Der Dipol zeigt in x-Richtung: E-Ebene = x–z, H-Ebene = y–z. Der Gewinn bezieht sich auf P_bulk/4π desselben "
                "Dipols im unbegrenzten Umgebungsmedium (mit derselben Gauß-Glättung). Der Anteil „in den Kegel“ ist auf die gesamte vom Dipol abgegebene "
-               "Leistung bezogen.")
+               "Leistung bezogen." + (" Auf einem Schichtstapel gilt das Fernfeld je Halbraum im eigenen Medium (Brechzahl n, Impedanz Z); der Gewinn nach unten "
+                                      "ist ebenfalls auf P_bulk/4π des Dipols bezogen." if layered else ""))
     th = np.degrees(np.asarray(far["theta"]))
     df = pd.DataFrame({"θ (°)": th, "Gewinn x-z (φ=0)": far["gain_xz_0"], "Gewinn x-z (φ=180°)": far["gain_xz_pi"], "Gewinn y-z (φ=90°)": far["gain_yz_0"],
                        "Gewinn y-z (φ=270°)": far["gain_yz_pi"], "Gewinn azimutal gemittelt": far["gain_mean"], "Anteil im Kegel": far["cone_fraction"]})

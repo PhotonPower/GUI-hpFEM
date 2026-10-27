@@ -198,14 +198,30 @@ def plane_surface(job, z_nm, direction):
     return s
 
 
-def emitter_far_raw(job, setup, field, m, axial, omega, mm, box, sigma_m, em):
-    """Far field of the emitter on the closed box in the background (near-to-far transform, Stratton-Chu): the axial dipole is the single order
-    m = 0; the transverse dipole (along x) needs both orders m = +1 (already solved: `field`) and m = -1 (a second solve with the mirrored
-    source). Returns the intensity [W/sr] at the azimuths phi_k = 2 pi k / FAR_PHIS for |p| = 1 A m, and the radiated power of the orders.
+def layer_stack(job, lam_nm):
+    """hpfem.LayerStack3D of the planar background at lam_nm (cover = background medium, layers from top to bottom, substrate) and whether the
+    substrate is lossless (then the far field into it exists). Coordinates in metres; the stack's z is the y of the meridian mesh."""
+    h, model = job.h, job.model
+    plan = fa.stack_layers(model)
+
+    def mat(name):
+        return h.Material(complex(fm.eps_at(model["materials"][name], lam_nm)))
+
+    cover = mat(model["background"])
+    layers = [h.Layer(mat(n), float(t) * NM) for n, t in plan["layers"]]
+    lossless = abs(complex(fm.eps_at(model["materials"][plan["substrate"]], lam_nm)).imag) < 1e-9
+    return h.LayerStack3D(cover, layers, mat(plan["substrate"]), float(plan["top_nm"]) * NM), lossless
+
+
+def emitter_far_raw(job, setup, field, m, axial, omega, mm, box, sigma_m, em, mode="homogeneous", lam_nm=None):
+    """Far field of the emitter on the closed box. mode "homogeneous": near-to-far transform (Stratton-Chu) in the background medium. mode "layered"
+    (substrate and layers through the box): by reciprocity with the plane waves of the stack, separately in the cover (theta < 90 deg) and in a
+    lossless substrate (theta > 90 deg; a lossy substrate has no far field, only the upper half is returned). The axial dipole is the single order
+    m = 0; the transverse dipole (along x) needs both orders m = +1 (already solved: `field`) and m = -1 (a second solve with the mirrored source).
+    Returns the intensity [W/sr] in the medium of each half-space at the azimuths phi_k = 2 pi k / FAR_PHIS for |p| = 1 A m and the radiated powers.
     `setup` is restored before returning (the caller re-uses it)."""
     h = job.h
     n_th = max(int(job.job.get("far_theta_samples", 721)), 181)
-    thetas = np.linspace(0.0, np.pi, n_th).tolist()
     orders, fields = [m], [field]
     if not axial:
         keep_m, keep_cur = setup.azimuthal_order, setup.current
@@ -220,16 +236,39 @@ def emitter_far_raw(job, setup, field, m, axial, omega, mm, box, sigma_m, em):
         orders.append(-1)
         fields.append(f_minus)
     t0 = time.time()
-    patterns = [h.axisymmetric_far_field(job.nd, job.h1, f.meridian, f.azimuthal, mo, omega, mm, box, thetas) for mo, f in zip(orders, fields)]
-    impedance = float(patterns[0].impedance)
-    p_far = float(sum(pt.radiated_power() for pt in patterns))
+    halves = []                                                        # (theta, [pattern per order]) per half-space
+    down_available = True
+    if mode == "layered":
+        stack, lossless = layer_stack(job, lam_nm)
+        n_half = max(n_th // 2, 91)
+        th_up = np.linspace(0.0, np.pi / 2 - 1e-6, n_half)
+        th_dn = np.linspace(np.pi / 2 + 1e-6, np.pi, n_half) if lossless else np.array([])
+        down_available = bool(lossless)
+        if not lossless:
+            say("  far field: lossy substrate, only the upper half-space (no far field into an absorbing substrate)")
+        res = [h.axisymmetric_layered_far_field(job.nd, job.h1, f.meridian, f.azimuthal, mo, omega, mm, box, stack, th_up.tolist(), th_dn.tolist())
+               for mo, f in zip(orders, fields)]
+        halves.append((th_up, [r.up for r in res]))
+        if down_available:
+            halves.append((th_dn, [r.down for r in res]))
+    else:
+        thetas = np.linspace(0.0, np.pi, n_th)
+        halves.append((thetas, [h.axisymmetric_far_field(job.nd, job.h1, f.meridian, f.azimuthal, mo, omega, mm, box, thetas.tolist())
+                                for mo, f in zip(orders, fields)]))
     phis = [2 * np.pi * k / fa.FAR_PHIS for k in range(fa.FAR_PHIS)]
-    inten = []
-    for phi in phis:
-        F = h.superpose_far_field(patterns, orders, float(phi))
-        inten.append((np.abs(np.asarray(F.f_theta)) ** 2 + np.abs(np.asarray(F.f_phi)) ** 2) / (2.0 * impedance))
-    say(f"  far field: {len(thetas)} angles, orders {orders}, {time.time() - t0:.1f} s")
-    return dict(theta=np.asarray(thetas), inten=np.asarray(inten), p_far=p_far, orders=orders)
+    th_all, inten_parts, powers = [], [], []
+    for th, patterns in halves:
+        impedance = float(patterns[0].impedance)                       # of the medium of this half-space
+        powers.append(float(sum(pt.radiated_power() for pt in patterns)))
+        rows = []
+        for phi in phis:
+            F = h.superpose_far_field(patterns, orders, float(phi))
+            rows.append((np.abs(np.asarray(F.f_theta)) ** 2 + np.abs(np.asarray(F.f_phi)) ** 2) / (2.0 * impedance))
+        th_all.append(th)
+        inten_parts.append(np.asarray(rows))
+    say(f"  far field ({mode}): {sum(len(t) for t in th_all)} angles, orders {orders}, {time.time() - t0:.1f} s")
+    return dict(theta=np.concatenate(th_all), inten=np.concatenate(inten_parts, axis=1), p_far=float(sum(powers)), orders=orders,
+                layered=(mode == "layered"), p_up=powers[0], p_down=powers[1] if len(powers) > 1 else 0.0, down_available=down_available)
 
 
 def emitter_far_final(raw, p_total, p_bulk, axial):
@@ -239,12 +278,20 @@ def emitter_far_final(raw, p_total, p_bulk, axial):
     iso = p_bulk / (4.0 * np.pi)
     n = fa.FAR_PHIS
     idx = {"xz_0": 0, "yz_0": n // 4, "xz_pi": n // 2, "yz_pi": 3 * n // 4}
+    layered = bool(raw.get("layered"))
     out = dict(theta=th.tolist(), orientation="axial" if axial else "transverse", orders=raw["orders"], P_far=raw["p_far"],
-               P_total=p_total, balance=raw["p_far"] / p_total if p_total else None)
+               P_total=p_total, balance=raw["p_far"] / p_total if p_total else None, layered=layered)
     for key, i in idx.items():
         out[f"gain_{key}"] = (inten[i] / iso).tolist()
     out["gain_mean"] = (mean / iso).tolist()
     out.update(fa.far_pattern_metrics(th, mean, p_total, p_bulk))
+    if raw.get("down_available", True) and th[-1] > np.pi - 1e-3:     # the cone around -z: the same metrics on the reversed grid
+        dn = fa.far_pattern_metrics(np.pi - th[::-1], mean[::-1], p_total, p_bulk)
+        out.update(cone_fraction_down=dn["cone_fraction"], axis_gain_down=dn["axis_gain"], half_angle_down_deg=dn["half_angle_fwhm_deg"])
+    if layered:
+        out.update(P_up=raw["p_up"], P_down=raw["p_down"], frac_up=raw["p_up"] / p_total if p_total else None,
+                   frac_down=raw["p_down"] / p_total if p_total else None, down_available=bool(raw.get("down_available", True)))
+        out["frac_guided_absorbed"] = 1.0 - out["balance"] if out["balance"] is not None else None   # rest: guided along the layers, absorbed
     return out
 
 
@@ -280,7 +327,7 @@ def emitter_point(job, lam_nm, surfaces, em, want_field=False):
     far_raw = None
     if surfaces.get("box") is not None:
         try:
-            far_raw = emitter_far_raw(job, setup, field, m, axial, omega, mm, surfaces["box"], sigma, em)
+            far_raw = emitter_far_raw(job, setup, field, m, axial, omega, mm, surfaces["box"], sigma, em, mode=surfaces.get("far_mode", "homogeneous"), lam_nm=lam_nm)
         except Exception as exc:
             say(f"WARN Fernfeld nicht berechnet: {exc}")
     top = flux(surfaces["top"]) if surfaces.get("top") is not None and len(surfaces["top"]) else 0.0
@@ -304,7 +351,8 @@ def emitter_point(job, lam_nm, surfaces, em, want_field=False):
                n_emitter=n_em, dofs=job.dofs, time_s=t_solve)
     if far_raw is not None:
         res["far"] = emitter_far_final(far_raw, total, bulk, axial)
-        say(f"  far field power / flux = {res['far']['balance']:.4f}; on-axis gain {res['far']['axis_gain']:.3g}"
+        say((f"  far field up {res['far']['frac_up']:.4f}, down {res['far']['frac_down']:.4f} of the emitted power (rest guided / absorbed); "
+             if res["far"]["layered"] else f"  far field power / flux = {res['far']['balance']:.4f}; ") + f"on-axis gain {res['far']['axis_gain']:.3g}"
             + (f"; half-angle {res['far']['half_angle_fwhm_deg']:.2f} deg" if res["far"]["half_angle_fwhm_deg"] is not None else ""))
     fld = export_field(job, field.meridian, field.azimuthal, job.job.get("subdivisions", 2)) if want_field else None
     if fld is not None:
@@ -476,9 +524,10 @@ def emitter_surfaces(job):
     if not len(top):
         say("WARN keine Facetten auf der oberen Messebene: β nicht messbar")
     box = None
+    far_mode = None
     if job.job.get("far_field"):
-        ok, why = fa.box_in_background(job.model)
-        if not ok:
+        far_mode, why = fa.far_field_plan(job.model)
+        if far_mode is None:
             say(f"WARN Fernfeld übersprungen: {why}")
         else:
             box = box_surface(job)
@@ -486,8 +535,8 @@ def emitter_surfaces(job):
                 say("WARN Fernfeld übersprungen: keine Facetten auf der Messbox (Netz mit der Aufgabe „Emitter“ neu erzeugen)")
                 box = None
             else:
-                say(f"far-field box: {len(box)} facets")
-    return dict(around=around, top=top, bottom=bottom, box=box, emitter_material=job.names[(src_tags[0] - 1) % fa.TAG_SOURCE], z=float(em["z_nm"]))
+                say(f"far-field box: {len(box)} facets, mode {far_mode}")
+    return dict(around=around, top=top, bottom=bottom, box=box, far_mode=far_mode, emitter_material=job.names[(src_tags[0] - 1) % fa.TAG_SOURCE], z=float(em["z_nm"]))
 
 
 # ------------------------------------------------------------------------------------------------------------------ main
