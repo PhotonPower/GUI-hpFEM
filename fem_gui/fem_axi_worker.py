@@ -198,6 +198,56 @@ def plane_surface(job, z_nm, direction):
     return s
 
 
+def emitter_far_raw(job, setup, field, m, axial, omega, mm, box, sigma_m, em):
+    """Far field of the emitter on the closed box in the background (near-to-far transform, Stratton-Chu): the axial dipole is the single order
+    m = 0; the transverse dipole (along x) needs both orders m = +1 (already solved: `field`) and m = -1 (a second solve with the mirrored
+    source). Returns the intensity [W/sr] at the azimuths phi_k = 2 pi k / FAR_PHIS for |p| = 1 A m, and the radiated power of the orders.
+    `setup` is restored before returning (the caller re-uses it)."""
+    h = job.h
+    n_th = max(int(job.job.get("far_theta_samples", 721)), 181)
+    thetas = np.linspace(0.0, np.pi, n_th).tolist()
+    orders, fields = [m], [field]
+    if not axial:
+        keep_m, keep_cur = setup.azimuthal_order, setup.current
+        try:
+            setup.azimuthal_order = -1
+            setup.current = h.axisymmetric_gaussian_dipole(float(em["z_nm"]) * NM, 1.0, h.AxisDipole.TRANSVERSE, sigma_m, omega, -1)
+            t0 = time.time()
+            f_minus = h.AxisymmetricScattering(job.nd, job.h1, setup).solve()
+            say(f"  far field: second solve for m = -1 in {time.time() - t0:.1f} s")
+        finally:
+            setup.azimuthal_order, setup.current = keep_m, keep_cur
+        orders.append(-1)
+        fields.append(f_minus)
+    t0 = time.time()
+    patterns = [h.axisymmetric_far_field(job.nd, job.h1, f.meridian, f.azimuthal, mo, omega, mm, box, thetas) for mo, f in zip(orders, fields)]
+    impedance = float(patterns[0].impedance)
+    p_far = float(sum(pt.radiated_power() for pt in patterns))
+    phis = [2 * np.pi * k / fa.FAR_PHIS for k in range(fa.FAR_PHIS)]
+    inten = []
+    for phi in phis:
+        F = h.superpose_far_field(patterns, orders, float(phi))
+        inten.append((np.abs(np.asarray(F.f_theta)) ** 2 + np.abs(np.asarray(F.f_phi)) ** 2) / (2.0 * impedance))
+    say(f"  far field: {len(thetas)} angles, orders {orders}, {time.time() - t0:.1f} s")
+    return dict(theta=np.asarray(thetas), inten=np.asarray(inten), p_far=p_far, orders=orders)
+
+
+def emitter_far_final(raw, p_total, p_bulk, axial):
+    """Gain patterns (relative to the isotropic emitter of the same medium, P_bulk / 4 pi), metrics and the power check as a JSON-able dict."""
+    th, inten = raw["theta"], raw["inten"]
+    mean = inten.mean(axis=0)
+    iso = p_bulk / (4.0 * np.pi)
+    n = fa.FAR_PHIS
+    idx = {"xz_0": 0, "yz_0": n // 4, "xz_pi": n // 2, "yz_pi": 3 * n // 4}
+    out = dict(theta=th.tolist(), orientation="axial" if axial else "transverse", orders=raw["orders"], P_far=raw["p_far"],
+               P_total=p_total, balance=raw["p_far"] / p_total if p_total else None)
+    for key, i in idx.items():
+        out[f"gain_{key}"] = (inten[i] / iso).tolist()
+    out["gain_mean"] = (mean / iso).tolist()
+    out.update(fa.far_pattern_metrics(th, mean, p_total, p_bulk))
+    return out
+
+
 def emitter_point(job, lam_nm, surfaces, em, want_field=False):
     """One wavelength: emitted power, Purcell factor, fractions through the planes (and the field)."""
     h = job.h
@@ -227,6 +277,12 @@ def emitter_point(job, lam_nm, surfaces, em, want_field=False):
         return factor * float(h.axisymmetric_poynting_flux(job.nd, job.h1, field.meridian, field.azimuthal, m, omega, mm, surface))
 
     total = flux(surfaces["around"])
+    far_raw = None
+    if surfaces.get("box") is not None:
+        try:
+            far_raw = emitter_far_raw(job, setup, field, m, axial, omega, mm, surfaces["box"], sigma, em)
+        except Exception as exc:
+            say(f"WARN Fernfeld nicht berechnet: {exc}")
     top = flux(surfaces["top"]) if surfaces.get("top") is not None and len(surfaces["top"]) else 0.0
     bottom = flux(surfaces["bottom"]) if surfaces.get("bottom") is not None and len(surfaces["bottom"]) else 0.0
     n_em = float(np.sqrt(eps[surfaces["emitter_material"]] + 0j).real)
@@ -246,6 +302,10 @@ def emitter_point(job, lam_nm, surfaces, em, want_field=False):
     res = dict(lam_nm=lam_nm, P_total=total, P_top=top, P_bottom=bottom, P_bulk=bulk, P_bulk_analytic=bulk_analytic, purcell=total / bulk,
                purcell_radiative=(top + bottom) / bulk, beta_top=top / total if total else None, beta_bottom=bottom / total if total else None,
                n_emitter=n_em, dofs=job.dofs, time_s=t_solve)
+    if far_raw is not None:
+        res["far"] = emitter_far_final(far_raw, total, bulk, axial)
+        say(f"  far field power / flux = {res['far']['balance']:.4f}; on-axis gain {res['far']['axis_gain']:.3g}"
+            + (f"; half-angle {res['far']['half_angle_fwhm_deg']:.2f} deg" if res["far"]["half_angle_fwhm_deg"] is not None else ""))
     fld = export_field(job, field.meridian, field.azimuthal, job.job.get("subdivisions", 2)) if want_field else None
     if fld is not None:
         fld.update(lam_nm=lam_nm, m=m, kind="emitter", purcell=res["purcell"])
@@ -415,7 +475,19 @@ def emitter_surfaces(job):
     say(f"surfaces: around the emitter {len(around)} facets, top plane {len(top)}, bottom plane {len(bottom)}")
     if not len(top):
         say("WARN keine Facetten auf der oberen Messebene: β nicht messbar")
-    return dict(around=around, top=top, bottom=bottom, emitter_material=job.names[(src_tags[0] - 1) % fa.TAG_SOURCE], z=float(em["z_nm"]))
+    box = None
+    if job.job.get("far_field"):
+        ok, why = fa.box_in_background(job.model)
+        if not ok:
+            say(f"WARN Fernfeld übersprungen: {why}")
+        else:
+            box = box_surface(job)
+            if not len(box):
+                say("WARN Fernfeld übersprungen: keine Facetten auf der Messbox (Netz mit der Aufgabe „Emitter“ neu erzeugen)")
+                box = None
+            else:
+                say(f"far-field box: {len(box)} facets")
+    return dict(around=around, top=top, bottom=bottom, box=box, emitter_material=job.names[(src_tags[0] - 1) % fa.TAG_SOURCE], z=float(em["z_nm"]))
 
 
 # ------------------------------------------------------------------------------------------------------------------ main
