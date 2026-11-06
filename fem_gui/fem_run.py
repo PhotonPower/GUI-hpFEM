@@ -89,6 +89,21 @@ def start_worker(py, repo, folder, threads=0, script="fem_worker.py"):
                             stderr=subprocess.STDOUT, creationflags=flags)
 
 
+def start_study(py, repo, folder, threads=0):
+    """Starts the job runner of hpfem (python -m hpfem.run, job schema 2) on <folder>/job.json in the background: results.json and the study
+    store <name>.study.jsonl go to <folder>, the JSON-lines events to <folder>/log.txt; <folder>/cancel stops it after the current
+    evaluation. The study store stays, so a restart with the same job replays the evaluations already done and continues."""
+    folder = Path(folder)
+    for name in ("results.json", "cancel"):
+        if (folder / name).exists():
+            (folder / name).unlink()
+    log = open(folder / "log.txt", "w", encoding="utf-8")
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.Popen([str(py), "-m", "hpfem.run", str(folder / "job.json"), "--out", str(folder), "--cancel-file", str(folder / "cancel"),
+                             "--quiet"], cwd=_cwd(repo, folder), env=worker_env(repo, threads), stdout=log, stderr=subprocess.STDOUT,
+                            creationflags=flags)
+
+
 def request_cancel(folder):
     """Asks the worker to stop: it polls <folder>/cancel between the phases of a solve (hpfem >= 0.4) and between the sweep points."""
     (Path(folder) / "cancel").write_text("cancel", encoding="utf-8")
@@ -143,6 +158,12 @@ try:
         feats["opt"] = True
     except Exception:
         feats["opt"] = False
+    try:
+        import hpfem.run as hr
+        feats["study"] = "optimize" in getattr(hr, "STUDY_TASKS", ())
+        feats["opt_mcmc"] = __import__("importlib").util.find_spec("emcee") is not None
+    except Exception:
+        feats["study"] = feats["opt_mcmc"] = False
     out["features"] = feats
 except Exception as exc:
     out["error"] = f"{type(exc).__name__}: {exc}"
