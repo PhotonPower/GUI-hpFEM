@@ -575,6 +575,99 @@ def jacobian_dataframe(pt):
     return df
 
 
+def jones_orders(points):
+    """The order keys ("R0", "T-1", ...) with Jones matrices in any of the points, reflected first, then by m."""
+    keys = {k for p in points if "error" not in p for k in (p.get("jones") or {})}
+    return sorted(keys, key=lambda k: (k[0] != "R", int(k[1:])))
+
+
+def jones_matrix(pt, key):
+    """The complex 2x2 Jones matrix of order ``key`` of one point (None if missing)."""
+    d = (pt.get("jones") or {}).get(key)
+    if not d:
+        return None
+    return np.array([[complex(re, im) for re, im in row] for row in d["J"]])
+
+
+def jones_dataframe(pt, key):
+    """Jones matrix of one order as a table: rows = outgoing channel (s, p or the substrate modes), columns = incident s, p; magnitude,
+    phase (°), real and imaginary part."""
+    j = jones_matrix(pt, key)
+    if j is None:
+        return pd.DataFrame()
+    rows = pt["jones"][key].get("channels", ["s", "p"])
+    out = []
+    for r, name in enumerate(rows):
+        for c, inc in enumerate(("s", "p")):
+            v = j[r, c]
+            out.append({"Element": f"J_{name[0]}{inc}", "aus": name, "ein": inc, "|J|": abs(v), "Phase (°)": float(np.degrees(np.angle(v))),
+                        "Re": v.real, "Im": v.imag, "|J|² (Effizienz)": abs(v) ** 2})
+    return pd.DataFrame(out)
+
+
+def mueller_dataframe(pt, key, normalised=True):
+    """Mueller matrix (Stokes I, Q, U, V) of one order; normalised by M00 (the efficiency for unpolarised light) if asked."""
+    d = (pt.get("jones") or {}).get(key)
+    if not d:
+        return pd.DataFrame()
+    m = np.asarray(d["M"], dtype=float)
+    if normalised and abs(m[0, 0]) > 0:
+        m = m / m[0, 0]
+    df = pd.DataFrame(m, columns=["I", "Q", "U", "V"])
+    df.insert(0, "aus \\ ein", ["I", "Q", "U", "V"])
+    return df
+
+
+def fig_mueller(points, mode, key):
+    """The 16 Mueller elements m_ij / m_00 of order ``key`` (m_00 itself as the efficiency): a 4x4 heat map for a single point, curves
+    along a sweep."""
+    import matplotlib.pyplot as plt
+
+    pts = [p for p in points if "error" not in p and (p.get("jones") or {}).get(key)]
+    if not pts:
+        fig, ax = plt.subplots(figsize=(7, 2.5))
+        ax.text(0.5, 0.5, "keine Jones-Matrizen", ha="center")
+        ax.axis("off")
+        return fig
+    ms = np.array([np.asarray(p["jones"][key]["M"], dtype=float) for p in pts])
+    norm = ms / np.where(np.abs(ms[:, :1, :1]) > 0, ms[:, :1, :1], 1.0)
+    norm[:, 0, 0] = ms[:, 0, 0]
+    labels = "IQUV"
+    if mode == "none" or len(pts) == 1:
+        fig, ax = plt.subplots(figsize=(5.2, 4.4))
+        shown = norm[0].copy()
+        shown[0, 0] = 1.0
+        im = ax.imshow(shown, cmap="RdBu_r", vmin=-1, vmax=1)
+        for i in range(4):
+            for j in range(4):
+                txt = f"{ms[0, 0, 0]:.4f}" if i == j == 0 else f"{norm[0, i, j]:+.3f}"
+                ax.text(j, i, txt, ha="center", va="center", fontsize=8)
+        ax.set_xticks(range(4), labels)
+        ax.set_yticks(range(4), labels)
+        ax.set_xlabel("einfallend")
+        ax.set_ylabel("ausfallend")
+        ax.set_title(f"Mueller-Matrix {key} (m_ij / m_00; m_00 = Effizienz unpolarisiert)", fontsize=9)
+        fig.colorbar(im, ax=ax, shrink=0.8)
+        fig.tight_layout()
+        return fig
+    xs = [p.get("value") if mode != "none" else p.get("index", 0) for p in pts]
+    fig, axs = plt.subplots(4, 4, figsize=(11, 8.5), sharex=True)
+    for i in range(4):
+        for j in range(4):
+            a = axs[i, j]
+            a.plot(xs, norm[:, i, j], "o-", ms=2.5, color="#1f77b4" if (i, j) != (0, 0) else "#d62728")
+            a.set_title("m_00 (Effizienz)" if i == j == 0 else f"m_{labels[i]}{labels[j]} / m_00", fontsize=8)
+            if (i, j) != (0, 0):
+                a.set_ylim(-1.05, 1.05)
+            a.grid(alpha=0.3)
+            a.tick_params(labelsize=7)
+    for a in axs[-1]:
+        a.set_xlabel(SWEEP_LABEL.get(mode, mode), fontsize=8)
+    fig.suptitle(f"Mueller-Matrix der Ordnung {key}", fontsize=10)
+    fig.tight_layout()
+    return fig
+
+
 def jacobian_sweep(points, mode):
     """{column label: (x values, dR/dp, dT/dp or None)} of the total R and T along the sweep."""
     out = {}

@@ -25,7 +25,7 @@ Die App startet die Rechnung (Worker) als eigenen Prozess in einem Python mit `h
 | Teil | Python | Pakete |
 |---|---|---|
 | App (Oberfläche, Gmsh, Auswertung) | beliebiges Python ≥ 3.10 | `pip install -r requirements.txt` |
-| Rechnung (Worker) | ein Python mit `hpfem` | [hp-FEM](https://github.com/PhotonPower/hp-FEM) **ab 0.4** empfohlen (`hpfem.grating`, Resonanzen, Prüfungen; Ableitungen ab dem Stand M16 auf `main`). Ältere Versionen mit `ConicalScattering` gehen mit den klassischen Lösern. |
+| Rechnung (Worker) | ein Python mit `hpfem` | [hp-FEM](https://github.com/PhotonPower/hp-FEM) **ab 0.4** empfohlen (`hpfem.grating`, Resonanzen, Prüfungen; Ableitungen ab dem Stand M16, Kristalle und Jones-/Mueller-Matrizen ab M19 auf `main`). Ältere Versionen mit `ConicalScattering` gehen mit den klassischen Lösern. |
 
 ## Installation und Start (Windows, eine Umgebung für App und Rechnung)
 

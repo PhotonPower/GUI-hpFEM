@@ -154,14 +154,27 @@ def prepare(case, lam_nm):
     lam = lam_nm * 1e-9
     k0 = 2 * np.pi / lam
     eps = {n: fm.eps_at(model["materials"][n], lam_nm) for n in case.names}
-    mat = {n: h.Material(complex(e)) for n, e in eps.items()}
+    crystals = [n for n in case.names if fm.is_crystal(model["materials"][n])]
+    if crystals:
+        # anisotropic materials (hp-FEM M19): tensors in the laboratory frame, only through hpfem.grating (solve / jones)
+        if case.job["solver"].get("engine") != "grating":
+            raise ValueError(f"Kristalle ({', '.join(crystals)}) rechnet nur der Löser hpfem.grating")
+        if not (hasattr(h, "AnisotropicStack") and hasattr(h.Material, "anisotropic")):
+            raise ValueError("Kristalle brauchen hp-FEM mit anisotropen Materialien (M19, AnisotropicStack)")
+        if model["cover"] in crystals:
+            raise ValueError("Das Einfallsmedium muss isotrop sein")
+    mat = {n: (h.Material.anisotropic(fm.tensor_at(model["materials"][n], lam_nm)) if n in crystals else h.Material(complex(e)))
+           for n, e in eps.items()}
     e_cover, e_sub = eps[model["cover"]], eps[model["substrate"]]
     if abs(e_cover.imag) > 1e-9 or e_cover.real < 1:
         raise ValueError("Einfallsmedium nicht verlustfrei")
     layers = [h.Layer(mat[l["material"]], case.interfaces[i] - case.interfaces[i + 1]) for i, l in enumerate(model["layers"])]
-    stack = h.LayerStack2D(mat[model["cover"]], layers, mat[model["substrate"]], case.interfaces[0])
+    in_stack = [model["cover"], model["substrate"]] + [l["material"] for l in model["layers"]]
+    make = h.AnisotropicStack if any(n in crystals for n in in_stack) else h.LayerStack2D   # crystal layers / substrate: the 4x4 stack
+    stack = make(mat[model["cover"]], layers, mat[model["substrate"]], case.interfaces[0])
+    lossless_sub = float(np.abs(fm.tensor_at(model["materials"][model["substrate"]], lam_nm).imag).max()) < 1e-9
     return SimpleNamespace(lam_nm=lam_nm, k0=k0, omega=k0 * h.constants.c0, eps=eps, mat=mat, stack=stack, e_sub=e_sub,
-                           n_cover=float(np.sqrt(e_cover).real), n_sub=np.sqrt(e_sub + 0j), lossless_sub=abs(e_sub.imag) < 1e-9)
+                           n_cover=float(np.sqrt(e_cover).real), n_sub=np.sqrt(e_sub + 0j), lossless_sub=lossless_sub, crystals=crystals)
 
 
 def design_pml(case, ctx, theta, kx0, beta, solver):
@@ -553,8 +566,15 @@ class GratingRun(Run):
             kwargs["extra_quadrature_order"] = int(solver["extra_quadrature_order"])
         t0 = time.time()
         Control.last_phase = None
-        self.result = r = grating.solve(self.mesh, materials, ctx.stack, "s" if pol == "TE" else "p", np.radians(theta), np.radians(phi), ctx.omega,
-                                        **opts, **kwargs)
+        self.jones = None
+        if solver.get("jones") and hasattr(grating, "jones"):
+            # Jones / Mueller matrices (hp-FEM M19): the solves for s and p; the point's own polarisation is one of them
+            kwargs.pop("scalar")
+            self.jones = grating.jones(self.mesh, materials, ctx.stack, np.radians(theta), np.radians(phi), ctx.omega, scalar=scalar, **opts, **kwargs)
+            self.result = r = self.jones.s if pol == "TE" else self.jones.p
+        else:
+            self.result = r = grating.solve(self.mesh, materials, ctx.stack, "s" if pol == "TE" else "p", np.radians(theta), np.radians(phi), ctx.omega,
+                                            **opts, **kwargs)
         self.t_solve = time.time() - t0
         self.h, self.case, self.ctx = h, case, ctx
         self.problem, self.solution, self.wave = r.problem, r.solution, r.wave
@@ -592,7 +612,20 @@ class GratingRun(Run):
                     a = np.asarray(o.amplitude, dtype=complex)
                     amps[f"{side}{int(o.m)}"] = [[float(c.real), float(c.imag)] for c in a]
         out["amplitudes"] = amps
+        if self.jones is not None:
+            out["jones"] = jones_data(self.jones)
         return out
+
+
+def jones_data(jr):
+    """Jones (2x2 complex, as [re, im] pairs) and Mueller (4x4) matrix of every propagating order of an hpfem.grating.jones result, keyed
+    "R0", "T-1", ...; columns: incident s, p; rows: outgoing s, p or the two mode channels of a crystal substrate."""
+    out = {}
+    for o in list(jr.R_orders) + list(jr.T_orders):
+        j = np.asarray(o.jones, dtype=complex)
+        out[f"{o.side}{int(o.m)}"] = dict(J=[[[float(v.real), float(v.imag)] for v in row] for row in j],
+                                          M=np.asarray(o.mueller, dtype=float).tolist(), channels=[str(c) for c in o.channels])
+    return out
 
 
 JAC_UNITS = {"wavelength": ("λ", 1e-9, "1/nm"), "theta": ("θ", np.pi / 180, "1/°"), "phi": ("φ", np.pi / 180, "1/°")}

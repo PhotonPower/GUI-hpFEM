@@ -33,13 +33,13 @@ st.set_page_config(page_title="FEM-Modellwerkstatt", layout="wide")
 
 # ---- all files of the app must come from the same version: name what is missing instead of a traceback
 _REQUIRED = {
-    "fem_materials.py": (fm, ["library_available", "eps_at", "nk", "describe", "valid_range", "LIBRARY"]),
+    "fem_materials.py": (fm, ["library_available", "eps_at", "nk", "describe", "valid_range", "LIBRARY", "is_crystal", "tensor_at", "principal_values"]),
     "fem_geometry.py": (fg, ["presets", "validate", "layout", "preview_figure", "mesh_figure", "build_mesh", "suggest_domain", "pml_plan", "shift_shapes",
                              "centering_shift", "shapes_x_extent", "material_index_map", "load_model", "new_shape", "parse_points", "shape_polygon", "reader_check"]),
     "fem_post.py": (fp, ["load_results", "results_dataframe", "fig_spectrum", "fig_pscan", "load_map", "derived", "fig_map", "fig_cut", "fig_absorption",
                          "fig_absorption_sweep", "fig_adaptive_steps", "fig_hpmesh", "load_tri", "derived_tri", "fig_map_tri", "fig_materials",
                          "available_quantities", "jacobian_dataframe", "fig_jacobian", "resonances_dataframe", "fig_resonances", "timing_dataframe",
-                         "balance_dataframe"]),
+                         "balance_dataframe", "jones_orders", "jones_dataframe", "mueller_dataframe", "fig_mueller"]),
     "fem_run.py": (fr, ["sweep_values", "wavelength_range", "make_job", "write_job", "start_worker", "read_log", "progress_info", "log_flags", "library_warnings",
                         "default_python", "probe_library", "run_check", "request_cancel", "estimate_line", "diagnostics_lines"]),
 }
@@ -51,7 +51,7 @@ if _worker.is_file():
         if not (HERE / _f).is_file():
             _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
     _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml", "GratingRun", "adaptive_grating_point",
-                          "resonance_point", "check_job", "jacobian_data") if k not in _wtext]
+                          "resonance_point", "check_job", "jacobian_data", "jones_data") if k not in _wtext]
     if _wmiss:
         _old.append(f"fem_worker.py: veraltet (es fehlt {', '.join(_wmiss)})")
 else:
@@ -104,7 +104,7 @@ def init_state():
     ensure_uids(S.model)
     S.mesh_settings = dict(cells_per_wavelength=3.0, skin_cells=1.0, interface_factor=0.7, curved=True, pml_cells_per_wavelength=6.0)
     S.solver = dict(order=4, backend="AUTO", pml_target=1e-3, pml_angle_cap_deg=80.0, orders_max=3, order_points=64, engine="grating",
-                    jacobian=False, scalar="auto", check=True,
+                    jacobian=False, scalar="auto", check=True, jones=False,
                     adaptive=dict(p0=3, steps=12, max_dofs=150000, dorfler=0.5, tol=1e-4, reuse_mesh=True, estimator="residual", mirror_periodic=True))
     S.maps = dict(enabled=True, indices=[0], res_nm=4.0, triangulate=True, subdiv=3, hs=True)
     S.task, S.resonance = "scattering", dict(num_modes=6, krylov_dimension=0)
@@ -509,7 +509,10 @@ with t_model:
         def _bump():
             S.ver += 1
 
-        ui.material_editor(model, ver, inc["wavelength_nm"], used_materials(model), rename_material, _bump)
+        ui.material_editor(model, ver, inc["wavelength_nm"], used_materials(model), rename_material, _bump,
+                           crystals=bool(FEATS.get("crystals")) or any(fm.is_crystal(v) for v in model["materials"].values()))
+        if not FEATS.get("crystals"):
+            st.caption("Kristalle (anisotrope Materialien) brauchen hp-FEM mit M19 (AnisotropicStack).")
         names = list(model["materials"])
 
         # ---------------------------------------------------------------- stack
@@ -725,12 +728,36 @@ with t_mesh:
     elif not errors:
         st.info("Noch kein Netz erzeugt.")
 
+def jones_view(res, mode):
+    """Results tab of the Jones and Mueller matrices (hpfem.grating.jones): order and point, the Mueller figure, the Jones table."""
+    pts = [p for p in res["points"] if "error" not in p and p.get("jones")]
+    if not pts:
+        st.info("Keine Jones-Matrizen in dieser Rechnung (Reiter 3: Löser „hpfem.grating“, „Jones- und Mueller-Matrizen berechnen“).")
+        return
+    keys = fp.jones_orders(pts)
+    c = st.columns(3)
+    key = c[0].selectbox("Ordnung", keys, key="jones_order", format_func=lambda k: f"{'reflektiert' if k[0] == 'R' else 'transmittiert'} m = {k[1:]}")
+    show_fig(fp.fig_mueller(pts, mode, key), f"mueller_{key}.png", "dl_mueller")
+    which = c[1].selectbox("Punkt Nr.", [p["index"] for p in pts], key="jones_pt") if len(pts) > 1 else pts[0]["index"]
+    pt = next(p for p in pts if p["index"] == which)
+    st.markdown("**Jones-Matrix**")
+    jdf = fp.jones_dataframe(pt, key)
+    table_show(jdf)
+    st.markdown("**Mueller-Matrix (normiert auf m_00)**")
+    table_show(fp.mueller_dataframe(pt, key))
+    st.download_button("Jones-Matrix (CSV)", csv_bytes(jdf), file_name=f"jones_{key}_{which}.csv", mime="text/csv", key="dl_jones_csv")
+    st.caption("Leistungsnormiert: die Spaltensummen von |J|² sind die Effizienzen der Ordnung für einfallendes s bzw. p. Basis s, p nach "
+               "conical_polarisation von hp-FEM (ŝ = k̂ × n̂, p̂ = ŝ × k̂ im Lösersystem; gegenüber dem Laborsystem wechseln J_sp und J_ps das Vorzeichen). "
+               "Stokes (I, Q, U, V) mit Q = |E_s|² − |E_p|²; m_00 ist die Effizienz für unpolarisiertes Licht. Bei einem Kristallsubstrat sind die "
+               "Zeilen der transmittierten Matrix die beiden Moden (ordentlich, außerordentlich).")
+
+
 # ================================================================================================================== 3 Rechnung
 with t_run:
     sv, mp_ = S.solver, S.maps
     mp_.setdefault("triangulate", True)
     mp_.setdefault("subdiv", 3)
-    for k_, v_ in dict(jacobian=False, scalar="auto", check=True).items():
+    for k_, v_ in dict(jacobian=False, scalar="auto", check=True, jones=False).items():
         sv.setdefault(k_, v_)
     for k_, v_ in dict(estimator="residual", mirror_periodic=True).items():
         sv["adaptive"].setdefault(k_, v_)
@@ -833,6 +860,14 @@ with t_run:
         sv["check"] = c[2].checkbox("Prüfungen der Bibliothek: Fehler stoppen den Punkt", value=bool(sv["check"]), key="sv_check",
                                     help="hpfem.diagnostics vor jeder Rechnung (Netz, periodische Ränder, PML, Auflösung, Materialbereich, streifende "
                                          "Ordnungen …). Warnungen erscheinen im Protokoll und unter Ergebnisse.")
+        sv["jones"] = st.checkbox("Jones- und Mueller-Matrizen berechnen", value=bool(sv["jones"]) and bool(FEATS.get("jones")), key="sv_jones",
+                                  disabled=not FEATS.get("jones"),
+                                  help="hpfem.grating.jones (M19): löst je Punkt für s und p und liefert für jede ausbreitungsfähige Ordnung die "
+                                       "leistungsnormierte Jones-Matrix (Spalten: einfallend s, p; Zeilen: ausfallend s, p bzw. die beiden Moden eines "
+                                       "Kristallsubstrats) und die Mueller-Matrix (Stokes I, Q, U, V). Doppelte Rechenzeit.")
+    crystal_names = [n for n, v in S.model["materials"].items() if fm.is_crystal(v)]
+    if crystal_names and not (sv["engine"] == "grating" and S.task == "scattering"):
+        st.error(f"Kristalle ({', '.join(crystal_names)}) rechnet nur der Löser „hpfem.grating“ (Streuung); bitte diesen Löser wählen.")
     if S.task == "resonances":
         rs_ = S.resonance
         c = st.columns(3)
@@ -1067,7 +1102,7 @@ with t_res:
             st.caption(f"Ordner mit allen Dateien: {view}")
     elif res is not None:
         sub = st.tabs(["Spektrum / Ordnungen", "Feldkarten", "Schnitte", "Absorption", "Prüfung, Bilanz, Zeit", "Ableitungen", "Konvergenz in p",
-                       "hp-Adaptivität", "Tabelle und Export"])
+                       "hp-Adaptivität", "Tabelle und Export", "Jones / Mueller"])
         with sub[0]:
             if len(df) and "R" in df:
                 show_fig(fp.fig_spectrum(df, mode), "spektrum.png", "dl_spec")
@@ -1159,6 +1194,8 @@ with t_res:
             if len(tdf):
                 st.markdown("**Rechenzeit je Phase (s)**")
                 table_show(tdf)
+        with sub[9]:
+            jones_view(res, mode)
         with sub[5]:
             jac_pts = [p for p in res["points"] if p.get("jacobian")]
             if not jac_pts:
