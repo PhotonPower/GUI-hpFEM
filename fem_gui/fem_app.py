@@ -26,6 +26,7 @@ import fem_post as fp  # noqa: E402
 import fem_run as fr  # noqa: E402
 import fem_ui as ui  # noqa: E402
 import fem_axi_app  # noqa: E402
+import fem_study_app  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 S = st.session_state
@@ -41,13 +42,13 @@ _REQUIRED = {
                          "available_quantities", "jacobian_dataframe", "fig_jacobian", "resonances_dataframe", "fig_resonances", "timing_dataframe",
                          "balance_dataframe", "jones_orders", "jones_dataframe", "mueller_dataframe", "fig_mueller"]),
     "fem_run.py": (fr, ["sweep_values", "wavelength_range", "make_job", "write_job", "start_worker", "read_log", "progress_info", "log_flags", "library_warnings",
-                        "default_python", "probe_library", "run_check", "request_cancel", "estimate_line", "diagnostics_lines"]),
+                        "default_python", "probe_library", "run_check", "request_cancel", "estimate_line", "diagnostics_lines", "start_study"]),
 }
 _old = [f"{name}: fehlt {', '.join(miss)}" for name, (mod, names) in _REQUIRED.items() if (miss := [n for n in names if not hasattr(mod, n)])]
 _worker = HERE / "fem_worker.py"
 if _worker.is_file():
     _wtext = _worker.read_text(encoding="utf-8", errors="replace")
-    for _f in ("fem_axi.py", "fem_axi_worker.py", "fem_axi_app.py", "fem_ui.py"):
+    for _f in ("fem_axi.py", "fem_axi_worker.py", "fem_axi_app.py", "fem_ui.py", "fem_study.py", "fem_study_app.py"):
         if not (HERE / _f).is_file():
             _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
     _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml", "GratingRun", "adaptive_grating_point",
@@ -196,13 +197,15 @@ ver = S.ver
 
 # ------------------------------------------------------------------------------------------------------------------ sidebar
 st.sidebar.title("FEM-Modellwerkstatt")
-MODES = {"periodic": "Periodische Struktur (Gitter, Metaoberfläche)", "axi": "Rotationskörper: Resonator, Emitter"}
+MODES = {"periodic": "Periodische Struktur (Gitter, Metaoberfläche)", "axi": "Rotationskörper: Resonator, Emitter",
+         "study": "Studie: Optimierung, Rekonstruktion, UQ"}
 app_mode = st.sidebar.radio("Art des Modells", list(MODES), format_func=MODES.get, key="app_mode",
                             help="Periodisch: Elementarzelle mit Bloch-Rändern, ebene Welle (Streuung, Beugung). Rotationskörper: Struktur mit "
-                                 "Rotationssymmetrie um z (Mikrosäule, Kugel, Scheibe), Resonanzen und Emission eines Dipols.")
+                                 "Rotationssymmetrie um z (Mikrosäule, Kugel, Scheibe), Resonanzen und Emission eines Dipols. Studie: Optimierung, "
+                                 "Parameterrekonstruktion und Unsicherheiten einer Gitterzelle mit dem Job-Runner der Bibliothek.")
 if app_mode == "axi":
     fem_axi_app.sidebar_model()
-else:
+elif app_mode == "periodic":
     presets = fg.presets()
     choice = st.sidebar.selectbox("Vorlage", ["– auswählen –"] + list(presets), key="preset_choice",
                                   help="Beispielmodelle zum Ausprobieren und als Ausgangspunkt für eigene Modelle.")
@@ -452,6 +455,9 @@ def iso_results(view, res, rmodel, mode):
 # ------------------------------------------------------------------------------------------------- body of revolution mode
 if app_mode == "axi":
     fem_axi_app.render(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
+    st.stop()
+if app_mode == "study":
+    fem_study_app.render(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
     st.stop()
 
 # ------------------------------------------------------------------------------------------------------------------ tabs

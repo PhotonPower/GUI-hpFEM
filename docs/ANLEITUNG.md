@@ -172,6 +172,27 @@ Summe weicht von der direkten Rechnung um wenige Prozent ab (eingefrorene PML). 
 **Emitter auf der Achse** koppeln nur an m = 0 (axial) und m = ±1 (senkrecht). Flüstergalerie-Moden (große m) einer Scheibe sind deshalb nur als
 Resonanzen zugänglich (Vorlage „Mikroscheibe“, m = 12 bei etwa 975 nm).
 
+## Studien: Optimierung, Rekonstruktion, UQ (Seitenleiste „Art des Modells“ → „Studie“)
+Eine Studie rechnet eine Gitterzelle für viele Parameterwerte mit dem Job-Runner der Bibliothek (`python -m hpfem.run`). Die Zelle wird im
+Job-Dokument beschrieben (JSON, Schema 2: Zelle, Netz, Materialien, Stapel, Parameter mit Grenzen, Konfigurationen aus Wellenlänge, Winkeln,
+Polarisation und Ordnungen), nicht im Modell der anderen Modi. Das Netz wird für jeden Parameterwert verformt, nicht neu erzeugt.
+
+1. **Reiter 1 „Studie“:** eine Vorlage wählen (Lamellenzelle mit Stegbreite und ε als Parametern, etwa eine Sekunde je Auswertung) oder eine
+   Job-Datei laden und das JSON bearbeiten; Fehler zeigt die Seite sofort. „Studie starten“ rechnet im Ordner `<Arbeitsordner>/study/<Name>`.
+   „Abbrechen“ hält nach der laufenden Auswertung an; liegt im Ordner schon ein Studienspeicher, setzt „Studie fortsetzen“ dort fort (bereits
+   gerechnete Punkte kommen aus dem Speicher). Ältere Studien öffnet „Vorhandene Studie öffnen“.
+2. **Verlauf:** eine Messgröße über den Auswertungen mit dem bisher besten Wert, die Parameter je Auswertung mit Grenzen und Ergebnis, die
+   abgetasteten Punkte in zwei frei wählbaren Größen. Fehlgeschlagene Auswertungen stehen mit Grund da; „MeshQualityError“ heißt, dass das
+   verformte Netz an diesen Werten ungültig ist (Grenzen enger setzen).
+3. **Pareto-Front:** die nicht dominierten Auswertungen zweier Messgrößen (je Maximum oder Minimum) — der Kompromiss zwischen zwei Zielen aus
+   allen gerechneten Punkten.
+4. **Ergebnis:** Optimum; bei der Rekonstruktion die angepassten Parameter mit Unsicherheiten der Laplace-Näherung, Korrelationen, Residuen und
+   mit `posterior` die emcee-Randverteilungen (68 %- und 95 %-Bereich); bei UQ Mittel, σ und Quantile jeder Messgröße und die Sobol'-Indizes
+   (erste Ordnung und total) als Balken.
+
+Die Vorlagen sind mit der Bibliothek durchgerechnet: die Rekonstruktion findet aus synthetischen Daten (Breite 210 nm, ε 2,3, Rauschen 0,002)
+210,5 ± 3,6 nm und 2,303 ± 0,014.
+
 ## Ableitungen (Reiter 3 → Reiter 4 „Ableitungen“)
 Mit dem Löser „hpfem.grating“ und „Ableitungen berechnen“ berechnet die Bibliothek (`hpfem.grating.jacobian`, M16) die Jacobi-Matrix aller
 Beugungseffizienzen nach Re ε und Im ε jedes Materials in der Zelle (Formen und Schichten, nicht Einfallsmedium und Substrat), nach der Wellenlänge
