@@ -258,6 +258,8 @@ def validate(model, lam_nm=None):
                                           f"y {lay['y_sub_bottom']:.0f} … {lay['y_cover_top']:.0f} nm)."))
         if lam_nm is not None:
             try:
+                if fm.is_crystal(model["materials"][model["cover"]]):
+                    msgs.append(("error", "Das Einfallsmedium muss isotrop sein (kein Kristall)."))
                 e = fm.eps_at(model["materials"][model["cover"]], lam_nm)
                 if abs(e.imag) > 1e-9 or e.real < 1:
                     msgs.append(("error", "Das Einfallsmedium muss verlustfrei sein (ε reell, ≥ 1)."))

@@ -68,6 +68,9 @@ class Job:
     def materials(self, lam_nm):
         """MaterialMap at lam_nm for every tag of the mesh (the emitter box carries 101 + index with the material of 1 + index); the background
         of the map is the surrounding medium (the contrast source of the scattered-field formulation is measured against it)."""
+        bad = [n for n in self.names if fm.is_crystal(self.model["materials"][n])]
+        if bad:
+            raise ValueError(f"Kristalle ({', '.join(bad)}) sind bei Rotationskörpern nicht möglich")
         e_bg = fm.eps_at(self.model["materials"][self.model["background"]], lam_nm)
         mm = self.h.MaterialMap(self.h.Material(complex(e_bg)))
         eps = {}

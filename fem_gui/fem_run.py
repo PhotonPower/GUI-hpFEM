@@ -128,8 +128,10 @@ try:
         feats["grating"] = hasattr(g, "solve")
         feats["jacobian"] = hasattr(g, "jacobian")
         feats["resonances"] = hasattr(g, "resonances")
+        feats["jones"] = hasattr(g, "jones")
     except Exception:
-        feats["grating"] = feats["jacobian"] = feats["resonances"] = False
+        feats["grating"] = feats["jacobian"] = feats["resonances"] = feats["jones"] = False
+    feats["crystals"] = hasattr(hpfem, "AnisotropicStack") and hasattr(getattr(hpfem, "Material", None), "anisotropic")
     feats["dwr"] = hasattr(hpfem, "conical_dwr_estimate")
     feats["sample"] = hasattr(getattr(hpfem, "ConicalScattering", None), "sample")
     feats["h_field"] = hasattr(getattr(hpfem, "ConicalScattering", None), "h_field")

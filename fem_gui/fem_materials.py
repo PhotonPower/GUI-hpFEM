@@ -7,6 +7,16 @@ Ein Material ist ein JSON-fähiges Dict ("spec") mit dem Schlüssel ``type``:
 * ``eps``:     ``{"type": "eps", "re": 2.25, "im": 0.0}``
 * ``drude``:   ``{"type": "drude", "eps_inf": 1.0, "omega_p_eV": 9.0, "gamma_eV": 0.07}``
 * ``table``:   ``{"type": "table", "rows": [[lambda_nm, n, k], ...]}`` (linear interpoliert, keine Extrapolation)
+* ``crystal``: anisotroper Kristall (hp-FEM M19, ADR-0015), konstante Hauptindizes, Tensor im Laborsystem
+  (x quer zu den Linien, y längs der Linien, z die Normale nach oben):
+
+  - ``{"type": "crystal", "kind": "uniaxial", "n_o": .., "k_o": .., "n_e": .., "k_e": .., "theta_deg": .., "phi_deg": ..}``:
+    optische Achse a = (sin θ cos φ, sin θ sin φ, cos θ) (θ gegen die Normale, φ gegen x), ε = ε_o I + (ε_e − ε_o) a aᵀ
+  - ``{"type": "crystal", "kind": "biaxial", "n": [nx, ny, nz], "k": [..], "euler_deg": [α, β, γ]}``:
+    ε = R diag(ε1, ε2, ε3) Rᵀ mit R = R_z(α) R_x(β) R_z(γ) (Hauptachsen gedreht, z-x-z)
+  - ``{"type": "crystal", "kind": "tensor", "re": 3×3, "im": 3×3}``: voller symmetrischer Tensor
+
+  ``eps_at`` gibt für Kristalle den Hauptwert mit dem größten Realteil (Netzweiten, Schätzungen); den Tensor liefert ``tensor_at``.
 
 Konvention exp(-i omega t): ε = (n + ik)², Verlust bedeutet Im ε > 0. Wellenlängen überall in nm (Vakuum).
 
@@ -34,6 +44,7 @@ _SELLMEIER = {
 _CONSTANT = {"vacuum": 1.0, "air": 1.000293**2}
 
 LIBRARY = ["Si", "Ag", "Au", "Al", "GaAs", "MAPbI3", "SiO2", "TiO2", "water", "air", "vacuum"]
+CRYSTAL_KINDS = ("uniaxial", "biaxial", "tensor")
 
 _data_dir: Path | None = None
 _cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -113,10 +124,61 @@ def valid_range(spec):
     return None
 
 
+def is_crystal(spec) -> bool:
+    """True für einen anisotropen Kristall (Typ ``crystal``)."""
+    return spec.get("type") == "crystal"
+
+
+def _rot_z(a):
+    c, s = np.cos(a), np.sin(a)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def _rot_x(a):
+    c, s = np.cos(a), np.sin(a)
+    return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+
+def tensor_at(spec, lam_nm: float) -> np.ndarray:
+    """Komplexer 3×3-Tensor der relativen Permittivität im Laborsystem (x quer, y längs der Linien, z die Normale); isotrope Materialien
+    geben ε·I. Kristalle sind nicht dispersiv (``lam_nm`` wird dann nicht gebraucht)."""
+    if not is_crystal(spec):
+        return eps_at(spec, lam_nm) * np.eye(3, dtype=complex)
+    kind = spec.get("kind")
+    if kind == "uniaxial":
+        e_o = complex(spec["n_o"], spec["k_o"]) ** 2
+        e_e = complex(spec["n_e"], spec["k_e"]) ** 2
+        t, p = np.radians(spec["theta_deg"]), np.radians(spec["phi_deg"])
+        a = np.array([np.sin(t) * np.cos(p), np.sin(t) * np.sin(p), np.cos(t)])
+        return e_o * np.eye(3, dtype=complex) + (e_e - e_o) * np.outer(a, a)
+    if kind == "biaxial":
+        e = [complex(n, k) ** 2 for n, k in zip(spec["n"], spec["k"])]
+        al, be, ga = np.radians(spec["euler_deg"])
+        r = _rot_z(al) @ _rot_x(be) @ _rot_z(ga)
+        return r @ np.diag(e) @ r.T
+    if kind == "tensor":
+        m = np.array(spec["re"], dtype=float) + 1j * np.array(spec["im"], dtype=float)
+        if m.shape != (3, 3):
+            raise ValueError("Kristall: der Tensor braucht 3×3 Einträge")
+        if not np.allclose(m, m.T, atol=1e-12):
+            raise ValueError("Kristall: der Tensor muss symmetrisch sein (ε = εᵀ, keine gyrotropen Medien)")
+        return m
+    raise KeyError(f"unbekannte Kristallart '{kind}'")
+
+
+def principal_values(spec, lam_nm: float) -> np.ndarray:
+    """Hauptwerte des Tensors (Eigenwerte), nach dem Realteil sortiert."""
+    w = np.linalg.eigvals(tensor_at(spec, lam_nm))
+    return w[np.argsort(w.real)]
+
+
 def eps_at(spec, lam_nm: float) -> complex:
-    """Komplexe relative Permittivität bei der Vakuumwellenlänge ``lam_nm`` [nm]."""
+    """Komplexe relative Permittivität bei der Vakuumwellenlänge ``lam_nm`` [nm]; für einen Kristall der Hauptwert mit dem größten
+    Realteil (für Netzweiten und Schätzungen, der Löser bekommt ``tensor_at``)."""
     lam = float(lam_nm)
     t = spec["type"]
+    if t == "crystal":
+        return complex(principal_values(spec, lam)[-1])
     if t == "eps":
         return complex(spec["re"], spec["im"])
     if t == "index":
@@ -169,4 +231,12 @@ def describe(spec) -> str:
         return f"Drude (ε∞ = {spec['eps_inf']:g}, ħωp = {spec['omega_p_eV']:g} eV, ħγ = {spec['gamma_eV']:g} eV)"
     if t == "table":
         return f"Tabelle ({len(spec['rows'])} Zeilen)"
+    if t == "crystal":
+        kind = spec.get("kind")
+        if kind == "uniaxial":
+            return (f"einachsig (n_o = {spec['n_o']:g}, n_e = {spec['n_e']:g}, Achse θ = {spec['theta_deg']:g}°, "
+                    f"φ = {spec['phi_deg']:g}°)")
+        if kind == "biaxial":
+            return f"zweiachsig (n = {', '.join(f'{v:g}' for v in spec['n'])}; Euler {', '.join(f'{v:g}°' for v in spec['euler_deg'])})"
+        return "Kristall (voller Tensor)"
     return t
