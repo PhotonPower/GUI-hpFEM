@@ -144,8 +144,16 @@ try:
         feats["jacobian"] = hasattr(g, "jacobian")
         feats["resonances"] = hasattr(g, "resonances")
         feats["jones"] = hasattr(g, "jones")
+        feats["emitter"] = hasattr(g, "dipole_emission") and hasattr(g, "emission_cost")
     except Exception:
-        feats["grating"] = feats["jacobian"] = feats["resonances"] = feats["jones"] = False
+        feats["grating"] = feats["jacobian"] = feats["resonances"] = feats["jones"] = feats["emitter"] = False
+    try:
+        import inspect
+        import hpfem.dataports as dpt
+        feats["dataports"] = hasattr(dpt, "planar_emitter_response")
+        feats["offaxis"] = "radii" in inspect.signature(dpt.axisymmetric_emitter_response).parameters
+    except Exception:
+        feats["dataports"] = feats["offaxis"] = False
     feats["crystals"] = hasattr(hpfem, "AnisotropicStack") and hasattr(getattr(hpfem, "Material", None), "anisotropic")
     feats["dwr"] = hasattr(hpfem, "conical_dwr_estimate")
     feats["sample"] = hasattr(getattr(hpfem, "ConicalScattering", None), "sample")
@@ -216,14 +224,20 @@ def progress_info(text):
         frac += min(s / S_, 1.0) / total
         label += f", hp-Schritt {s} von höchstens {S_}"
     phases = list(re.finditer(r"PHASE (\w+)", text))
-    if phases and phases[-1].start() > last_prog:
+    counted = list(re.finditer(r"^PHASE (\w+)(?: [\w.]+)? (\d+)/(\d+)[ \t]*$", text, flags=re.M))          # emitter tasks: "PHASE scan 12/224", "PHASE aperture 0.5 3/32"
+    if counted and counted[-1].start() > last_prog and counted[-1].start() >= phases[-1].start():
+        name, s, S_ = counted[-1].group(1), int(counted[-1].group(2)), int(counted[-1].group(3))
+        frac += min(s / max(S_, 1), 1.0) / total
+        label += f" · {PHASE_LABELS.get(name, name)} {s} von {S_}"
+    elif phases and phases[-1].start() > last_prog:
         name = phases[-1].group(1)
         label += f" · {PHASE_LABELS.get(name, name)}"
     return min(frac, 0.999), label
 
 
 PHASE_LABELS = {"assembly": "Assemblierung", "constraints": "Randbedingungen", "factorisation": "Faktorisierung", "factorization": "Faktorisierung",
-                "solve": "Lösen", "post": "Auswertung", "eigensolve": "Eigenwertlöser", "done": "Lösung fertig"}
+                "solve": "Lösen", "post": "Auswertung", "eigensolve": "Eigenwertlöser", "done": "Lösung fertig",
+                "scan": "Array-Scan (Zellenprobleme)", "emit": "Zellenproblem", "pattern": "Abstrahlmuster (ebene Wellen)", "aperture": "Apertur (ebene Wellen)"}
 
 
 def estimate_line(text):

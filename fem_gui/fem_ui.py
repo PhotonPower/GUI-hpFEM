@@ -15,7 +15,7 @@ CRYSTAL_DEFAULT = {"uniaxial": {"type": "crystal", "kind": "uniaxial", "n_o": 1.
                    "biaxial": {"type": "crystal", "kind": "biaxial", "n": [1.53, 1.54, 1.55], "k": [0.0, 0.0, 0.0], "euler_deg": [0.0, 0.0, 0.0]},
                    "tensor": {"type": "crystal", "kind": "tensor", "re": [[2.25, 0.0, 0.0], [0.0, 2.25, 0.0], [0.0, 0.0, 2.25]],
                               "im": [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]}}
-LIB_CHOICES = ["Si", "Ag", "Au", "Al", "GaAs", "MAPbI3", "SiO2", "TiO2", "water", "air", "vacuum"]
+LIB_CHOICES = list(fm.LIBRARY)
 DEFAULT_SPEC = {"library": {"type": "library", "name": "SiO2"}, "index": {"type": "index", "n": 1.5, "k": 0.0},
                 "eps": {"type": "eps", "re": 2.25, "im": 0.0}, "drude": {"type": "drude", "eps_inf": 1.0, "omega_p_eV": 9.0, "gamma_eV": 0.07},
                 "table": {"type": "table", "rows": [[400.0, 1.5, 0.0], [800.0, 1.5, 0.0]]}, "crystal": CRYSTAL_DEFAULT["uniaxial"]}

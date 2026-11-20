@@ -24,7 +24,7 @@ Empfohlen ist hp-FEM ab 0.4 (Ein-Aufruf-Schnittstelle `hpfem.grating`, Prüfunge
 die App nur den klassischen konischen Löser und den In-Ebenen-Löser an.
 
 ## Ablauf (fünf Reiter)
-1. **Modell:** Materialien (Bibliothek mit Si, Ag, Au, Al, GaAs, MAPbI3, SiO2, TiO2, Wasser, Luft; n + ik; ε; Drude; eigene Tabelle), Schichtaufbau
+1. **Modell:** Materialien (Bibliothek mit Si, Ag, Au, Al, Ti, Cr, GaAs, MAPbI3, SiO2, TiO2, Wasser, Luft; n + ik; ε; Drude; eigene Tabelle), Schichtaufbau
    (Einfallsmedium, Schichten, Substrat), Formen (Rechteck, Trapez, Kreis, Ellipse, Polygon; spätere überdecken frühere; Formen über dem Zellrand setzen sich
    periodisch fort), Beleuchtung (TE/TM, θ, φ, λ, Durchlauf über λ, θ oder φ) und Rechengebiet. Rechts steht die Vorschau, darunter die Prüfmeldungen.
    Mit **Vorlage laden** (Seitenleiste) starten, **Vorschlag aus der Wellenlänge übernehmen** setzt Höhen, PML und Substrattiefe.
@@ -171,6 +171,54 @@ Summe weicht von der direkten Rechnung um wenige Prozent ab (eingefrorene PML). 
 
 **Emitter auf der Achse** koppeln nur an m = 0 (axial) und m = ±1 (senkrecht). Flüstergalerie-Moden (große m) einer Scheibe sind deshalb nur als
 Resonanzen zugänglich (Vorlage „Mikroscheibe“, m = 12 bei etwa 975 nm).
+
+## Emitter (hp-FEM 0.5)
+
+Drei Wege, einen Dipol zu rechnen. Alle Faktoren sind auf den freien Dipol im selben Medium bezogen (frei = 1).
+
+**1. Planar, ohne Netz (Seitenleiste „Art des Modells“ → „Emitter über Schichtstapel“).** Ein Dipol in einem verlustfreien Medium (Wasser, Luft) über Schichten und
+Substrat (`dataports.planar_emitter_response`, Sommerfeld/Fresnel). Reiter 1: Materialien, Stapel, Wellenlänge(n), Höhen über der Oberkante, Detektorbereiche als
+numerische Aperturen (je Seite, ohne Überlappung). Reiter 2 rechnet (etwa 5 s je Wellenlänge). Reiter 3: **Purcell-Faktor** (F_∥, F_⊥, isotrop über der Höhe, eine Linie je
+Wellenlänge, logarithmisch), **Kanäle und Detektoren** (wohin die Leistung geht: ins Einfallsmedium, ins Substrat, absorbiert oder geführt; Anteile der
+Detektorbereiche), **Abstrahlmuster** (polar, oben und unten) und **Tabelle und Export** (CSV; der JSON-Umschlag `EmitterResponseTable` mit A_tot, A_rad, A_det für BindOptiX).
+Vorlagen: Au-Film in Wasser (Auslöschung und Plasmonen), Glas, Ag mit Ti-Haftschicht. Das Substrat darf verlustbehaftet sein (es strahlt dann nichts aus); der Wirt muss
+verlustfrei sein, Kristalle gibt es hier nicht. Dient auch als Referenz für die beiden anderen Wege.
+
+**2. In der Gitterzelle (Modus „Periodische Struktur“).** Reiter 1, Abschnitt „Emitter in der Zelle“: Haken setzen, Position x, y (y = 0 an der Oberkante des
+Stapels) und Breite σ der Gauß-Quelle. Die App prüft, dass im Umkreis von 6σ nur ein verlustfreies Medium liegt und die Quelle 6σ vom Zellrand entfernt ist; die Vorschau
+zeigt Stern und 6σ-Kreis, das Netz wird dort auf etwa 2σ verfeinert (Reiter 2 neu erzeugen). Reiter 3, Aufgabe **Emitter** (nur mit Emitter im Modell):
+
+* **Stufe B** (einzelner Dipol, Array-Scan `grating.dipole_emission`): Purcell-Faktor je Orientierung (x, y, z, isotrop), Anteile nach oben, unten und „nicht abgestrahlt“
+  (absorbiert, wenn die Struktur Verlust hat, sonst in geführten Moden) und die Leistung in Sammelaperturen (NA, Kegel um die Normale, `grating.emission_cone`).
+* **Stufe A** (Bloch-Array bei festem kx, β, `grating.emit`): Leistung je Beugungsordnung nach oben und unten.
+* **Stufe C** (Abstrahlmuster, `grating.emission_pattern`): dP/dΩ auf einem Raster aus θ, φ; Aperturen daraus.
+
+Der Array-Scan löst viele Zellenprobleme (komplexe Bloch-Phasen). **Die Kosten stehen vorher im Protokoll** (`COST`: Zahl der Lösungen, Freiheitsgrade und Speicher je Faktorisierung,
+gemessene Zeit je Lösung und Gesamtzeit) und unter Ergebnisse; „Nur die Kosten schätzen“ rechnet nichts anderes. Mit Stützstellen 6/4, Winkelnetz 16×32 und je einer
+Faktorisierung von etwa 10 000 Freiheitsgraden sind das einige Hundert bis Tausende Lösungen je Wellenlänge. Die Suche nach geführten Moden und Oberflächenplasmonen („Pole“,
+Einstellung „automatisch“) vervielfacht die Zahl, sobald ein Material einen größeren Index als die Halbräume hat oder ein Metall vorkommt: an der TiO₂-Metaoberfläche der
+Vorlage (Stützstellen 4/3, Winkelnetz 8×16) 2996 statt 693 Zellenprobleme je Wellenlänge und eine geschätzte Zeit von 8,7 h für zwei Wellenlängen. Nur wenn es sicher keine geführten Moden gibt, darf „aus“
+gewählt werden; sonst ist das Ergebnis falsch. Die Quelle sitzt in einem verlustfreien Medium (auch im Inneren einer Form möglich, solange 6σ in einem Material liegen);
+Kristalle und isolierte Strukturen gibt es hier nicht.
+
+**3. Rotationskörper, auch außerhalb der Achse (Modus „Rotationskörper“, Emitter).** Mit dem Haken „Emitter außerhalb der Achse“ und einer Liste von Abständen ρ rechnet die
+Bibliothek (`dataports.axisymmetric_emitter_response(radii=…)`) die Gauß-Quelle mit allen Azimutordnungen. Ergebnis je Wellenlänge und Abstand: Purcell-Tensor
+(F_ρ radial, F_φ azimutal, F_z axial, dazu der Kreuzterm A_xz), abgestrahlter Anteil, Detektoranteile (optional ein Bereich mit NA oben), Tabelle und JSON-Umschlag. Alle drei
+Dipolrichtungen kommen zugleich; die Richtung „axial/senkrecht“ der Achsen-Rechnung gilt hier nicht. Das Netz bekommt einen Kasten von ±6σ um jede Position, die Kästen müssen
+in einem Material liegen. Nur „fester Bereich“ als Spektrum (keine Resonanzzentrierung). Schlägt die Prüfung der Energiebilanz der Bibliothek an (A_rad > A_tot um mehr als 1 %),
+die Polynomordnung erhöhen oder das Netz verfeinern. Die Position wird in Schritten von 0,1 nm verschoben, wenn der Punktsucher der Bibliothek sie nicht findet (steht im Protokoll).
+
+**Gemessen (hpfem 0.5.0, 20.11.2026, p = 3):**
+
+* *Planar gegen Gitterzelle.* Flache Zelle (Luft/Glas, Periode 400 nm, Dipol 400 nm über dem Glas, σ = 10 nm, isotrop, λ = 600 nm, p = 3, 358 Dreiecke). Planar: F = 0,9855, nach oben 0,5522,
+  nach unten 0,4478, NA 0,5: 0,0700 der Gesamtleistung. **Stufe C** der Zelle (θ = 0° bis 30° in 5°-Schritten, φ = 0°): das Muster dP/dΩ stimmt mit dem planaren Fernfeld auf vier Stellen
+  überein (Gewinn 1,2217 bei 0°, 0,8684 bei 30°), die Leistung in der Apertur NA 0,5 ist 0,0687 von P_bulk gegen 0,0690 (planar, auf den freien Dipol bezogen): 0,4 %. Das Raster der Stufe C
+  muss über den Rand der Apertur hinausreichen (der Rand von NA 0,5 in Luft liegt bei 29,9993°); der Rand wird interpoliert. Dauer: 148 s für 14 ebene Wellen.
+  **Stufe B** braucht auch bei dieser kleinen Zelle mit Stützstellen 4/3 und Winkelnetz 8×16 576 Lösungen (Schätzung des Programms: 336 Zellenprobleme und 400 ebene Wellen); mit sehr groben
+  Einstellungen (Stützstellen 2/2, Winkelnetz 4×4, p = 2) schließt die Bilanz an der TiO₂-Metaoberfläche nur auf etwa 9 % (Anteile oben + unten = 1,09): für Zahlen erst die
+  Stützstellen erhöhen und die Kanäle gegen die Summe prüfen.
+* *Rotationskörper.* Glaskugel (r = 300 nm) in Luft, axialer Dipol 150 nm über dem Pol, σ = 8 nm: der Weg über die Achse (Larmor-Normierung) gibt F_P = 1,067 (700 nm) und 1,119 (800 nm),
+  der Weg der Bibliothek bei ρ = 0 F_z = 1,0687 und 1,1195: Abweichung 0,2 % und 0,04 %. Auf der Achse gilt F_ρ = F_φ und A_xz = 0; bei ρ = 200 nm liegt F_z (700 nm) bei 1,007.
 
 ## Studien: Optimierung, Rekonstruktion, UQ (Seitenleiste „Art des Modells“ → „Studie“)
 Eine Studie rechnet eine Gitterzelle für viele Parameterwerte mit dem Job-Runner der Bibliothek (`python -m hpfem.run`). Die Zelle wird im

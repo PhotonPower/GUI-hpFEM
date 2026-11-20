@@ -316,10 +316,22 @@ def layout(model):
                 z_plane_top=z_hi_s + 0.5 * margin, z_plane_bottom=z_lo_s - 0.5 * margin, r_plane=r_max + 0.5 * margin)
 
 
+def emitter_radii(model):
+    """Distances of the emitter from the axis (nm): [0.0] on the axis, else the list ``emitter["radii_nm"]`` (hp-FEM 0.5, off-axis emitters)."""
+    r = [float(v) for v in (model.get("emitter", {}).get("radii_nm") or [])]
+    return sorted(set(r)) if r else [0.0]
+
+
+def offaxis(model):
+    """True if the emitter sits off the axis (library path ``dataports.axisymmetric_emitter_response`` with ``radii``)."""
+    return bool(model.get("emitter", {}).get("radii_nm"))
+
+
 def source_box(model):
-    """Half-size a (nm) of the box [0, a] x [z - a, z + a] around the emitter, from the smearing width."""
+    """Half-size a (nm) of the box [max(0, rho - a), rho + a] x [z - a, z + a] around the emitter, from the smearing width (4 sigma on the axis;
+    6 sigma off the axis: the library takes the host cells within 6 sigma for the power)."""
     em = model["emitter"]
-    return max(4.0 * float(em["sigma_nm"]), 5.0)
+    return max((6.0 if offaxis(model) else 4.0) * float(em["sigma_nm"]), 5.0)
 
 
 def wavelength_range(model, task="resonance"):
@@ -413,10 +425,14 @@ def validate(model, task="resonance"):
         em = model["emitter"]
         a = source_box(model)
         z = float(em["z_nm"])
-        R, Z = np.meshgrid(np.linspace(0.0, a, 5), np.linspace(z - a, z + a, 41))
-        mats = set(materials_at(model, R.ravel(), Z.ravel()))
+        if any(v < 0 for v in (em.get("radii_nm") or [])):
+            out.append(("error", "Abstände von der Achse müssen ≥ 0 sein."))
+        mats = set()
+        for rho in emitter_radii(model):
+            R, Z = np.meshgrid(np.linspace(max(rho - a, 0.0), rho + a, 7), np.linspace(z - a, z + a, 41))
+            mats |= set(materials_at(model, R.ravel(), Z.ravel()))
         if len(mats) > 1:
-            out.append(("error", f"Der Kasten um den Emitter (r ≤ {a:g} nm, z = {z:g} ± {a:g} nm, 4σ) liegt in mehreren Materialien "
+            out.append(("error", f"Der Kasten um den Emitter (z = {z:g} ± {a:g} nm, {'6σ' if offaxis(model) else '4σ'}) liegt in mehreren Materialien "
                                  f"({', '.join(sorted(mats))}): Emitter weiter von der Grenzfläche weg oder σ kleiner."))
         else:
             try:
@@ -427,6 +443,8 @@ def validate(model, task="resonance"):
                 pass
         if em["sweep"]["mode"] == "fixed" and int(em["sweep"]["n"]) < 1:
             out.append(("error", "Mindestens ein Punkt im Spektrum."))
+        if offaxis(model) and em["sweep"]["mode"] == "resonance":
+            out.append(("error", "Emitter außerhalb der Achse: das Spektrum „um die Resonanz“ gibt es hier nicht (Spektrum „fester Bereich“ wählen)."))
     return out
 
 
@@ -463,8 +481,13 @@ def preview_figure(model, figsize=(7.2, 6.0), show_domain=True):
     em = model.get("emitter")
     if em and em.get("z_nm") is not None:
         mk = "↕" if em["orientation"] == "axial" else "↔"
-        ax.plot([0], [em["z_nm"]], marker="*", ms=13, color="C3", zorder=5)
-        ax.annotate(f"Emitter {mk}", (0, em["z_nm"]), xytext=(8, 8), textcoords="offset points", color="C3", fontsize=8)
+        if offaxis(model):
+            for rho in emitter_radii(model):                           # off the axis: one star per distance (and its mirror image)
+                ax.plot([rho, -rho], [em["z_nm"]] * 2, marker="*", ms=13, color="C3", zorder=5, ls="none")
+            ax.annotate("Emitter (außerhalb der Achse)", (emitter_radii(model)[-1], em["z_nm"]), xytext=(8, 8), textcoords="offset points", color="C3", fontsize=8)
+        else:
+            ax.plot([0], [em["z_nm"]], marker="*", ms=13, color="C3", zorder=5)
+            ax.annotate(f"Emitter {mk}", (0, em["z_nm"]), xytext=(8, 8), textcoords="offset points", color="C3", fontsize=8)
     ax.axvline(0, color="k", lw=0.8, ls="-.")
     handles = [Rectangle((0, 0), 1, 1, color=fg.material_color(model, n)) for n in model["materials"]]
     ax.legend(handles, list(model["materials"]), fontsize=7, loc="upper right")
@@ -503,6 +526,65 @@ def fig_modes(modes, target_nm=None):
     ax.grid(alpha=0.3, which="both")
     fig.tight_layout()
     return fig
+
+
+
+def fig_offaxis(points, which="purcell"):
+    """Emitters off the axis (hp-FEM 0.5, dataports.axisymmetric_emitter_response): the response tensors at (rho, 0, z) versus the distance rho from
+    the axis, one line per wavelength. which "purcell": A_tot (F_rho = A_xx radial, F_phi = A_yy azimuthal, F_z = A_zz, A_xz the cross term);
+    "radiated": A_rad / A_tot per orientation (the share that reaches the far field)."""
+    import matplotlib.pyplot as plt
+    ok = [p for p in points if p.get("offaxis") and "error" not in p]
+    if not ok:
+        fig, ax = plt.subplots(figsize=(7, 3))
+        ax.text(0.5, 0.5, "keine Ergebnisse", ha="center")
+        ax.axis("off")
+        return fig
+    cmap = plt.get_cmap("viridis")
+    fig, axs = plt.subplots(1, 3, figsize=(12, 3.8), sharex=True)
+    for i, p in enumerate(ok):
+        c = cmap(i / max(len(ok) - 1, 1))
+        rho = np.array(p["radii_nm"])
+        tot, rad = np.array(p["A_tot"]), np.array(p["A_rad"])
+        if which == "purcell":
+            ys = (tot[:, 0, 0], tot[:, 1, 1], tot[:, 2, 2])
+            labels = ("F_ρ = A_xx (radial)", "F_φ = A_yy (azimutal)", "F_z = A_zz (axial)")
+        else:
+            ys = tuple(np.divide(rad[:, k, k], tot[:, k, k], out=np.zeros_like(rho), where=tot[:, k, k] > 0) for k in range(3))
+            labels = ("Anteil ρ (radial)", "Anteil φ (azimutal)", "Anteil z (axial)")
+        for ax, y in zip(axs, ys):
+            ax.plot(rho, y, "o-", ms=4, color=c, label=f"{p['lam_nm']:g} nm")
+        if i == 0:
+            for ax, lab in zip(axs, labels):
+                ax.set_title(lab, fontsize=10)
+    for ax in axs:
+        ax.set_xlabel("Abstand von der Achse ρ (nm)")
+        ax.grid(alpha=0.3)
+        if which == "purcell":
+            ax.axhline(1.0, color="gray", lw=0.8, ls=":")
+    axs[0].set_ylabel("Purcell-Faktor (frei = 1)" if which == "purcell" else "abgestrahlt / abgegeben")
+    if len(ok) > 1:
+        axs[-1].legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def offaxis_dataframe(points):
+    """Table: one row per wavelength and distance."""
+    import pandas as pd
+    rows = []
+    for p in points:
+        if not p.get("offaxis") or "error" in p:
+            continue
+        for k, rho in enumerate(p["radii_nm"]):
+            t, r = np.array(p["A_tot"][k]), np.array(p["A_rad"][k])
+            row = {"λ (nm)": p["lam_nm"], "ρ (nm)": rho, "F_ρ": t[0, 0], "F_φ": t[1, 1], "F_z": t[2, 2], "A_xz": t[0, 2],
+                   "abgestrahlt ρ": r[0, 0] / t[0, 0], "abgestrahlt φ": r[1, 1] / t[1, 1], "abgestrahlt z": r[2, 2] / t[2, 2]}
+            tr_t = np.trace(t)
+            for d, name in enumerate(p["detectors"]):
+                row[f"{name} (Spur-Anteil)"] = float(np.trace(np.array(p["A_det"][k][d])) / tr_t)
+            rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def fig_purcell(points, resonance=None):
@@ -930,8 +1012,10 @@ def build_mesh(model, ms, out_dir, task="resonance"):
             out, _ = occ.intersect([(2, tag)], [(2, domain_box)], removeObject=True, removeTool=False)
             tools += [(dt, "part", idx) for dt in out if dt[0] == 2]
         if with_source:
-            sb = occ.addRectangle(0, float(em["z_nm"]) - a, 0, a, 2 * a)
-            tools.append(((2, sb), "source", -1))
+            for rho in emitter_radii(model):                              # one box per distance from the axis (on the axis: [0, a])
+                r0 = max(rho - a, 0.0)
+                sb = occ.addRectangle(r0, float(em["z_nm"]) - a, 0, rho + a - r0, 2 * a)
+                tools.append(((2, sb), "source", -1))
         lines = []
         for zp in (lay["z_plane_top"], lay["z_plane_bottom"]):
             if lay["z_lo"] < zp < lay["z_hi"]:
