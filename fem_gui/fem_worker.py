@@ -1234,6 +1234,16 @@ def main(argv=None) -> int:
     if (engine.startswith("grating") or task == "resonances") and not has_grating(hpfem):
         say("ERROR Dieses hpfem hat kein hpfem.grating (hp-FEM 0.4 oder neuer nötig): Löser „konisch (klassisch)“ wählen oder hpfem aktualisieren")
         return 1
+    if task == "emitter":                                          # a Gaussian dipole in the cell (hp-FEM M17): fem_emit_worker.py
+        if not has_grating(hpfem) or not hasattr(hpfem.grating, "dipole_emission"):
+            say("ERROR Emitter brauchen hp-FEM ab 0.5 (hpfem.grating.dipole_emission, M17)")
+            return 1
+        import fem_emit_worker
+        try:
+            return fem_emit_worker.run(hpfem, case, job, folder, Control, sys.modules[__name__])
+        except Exception as exc:
+            say(f"ERROR {exc}")
+            return 1
     values = sw["values"] if sw["mode"] != "none" else [None]
     n = len(values)
     maps = job.get("maps", {"enabled": False})

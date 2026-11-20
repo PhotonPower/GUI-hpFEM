@@ -20,7 +20,7 @@ Ein Material ist ein JSON-fähiges Dict ("spec") mit dem Schlüssel ``type``:
 
 Konvention exp(-i omega t): ε = (n + ik)², Verlust bedeutet Im ε > 0. Wellenlängen überall in nm (Vakuum).
 
-Die gemessenen Tabellen (Si, Ag, Au, Al, GaAs, MAPbI3) liegen als CSV in ``<hp-FEM>/python/hpfem/data``. Das Modul sucht
+Die gemessenen Tabellen (Si, Ag, Au, Al, Ti, Cr, GaAs, MAPbI3) liegen als CSV in ``<hp-FEM>/python/hpfem/data``. Das Modul sucht
 diesen Ordner über ``set_repo()``, die Umgebungsvariable ``HPFEM_DATA``, das Arbeitsverzeichnis und den Ordner der App.
 Sellmeier-Materialien (SiO2, TiO2, Wasser) und Konstanten (Luft, Vakuum) sind eingebaut.
 """
@@ -33,7 +33,7 @@ import numpy as np
 
 HC_EV_NM = 1239.841984  # h*c in eV nm
 
-_TABULATED = ("Si", "Au", "Ag", "Al", "GaAs", "MAPbI3")
+_TABULATED = ("Si", "Au", "Ag", "Al", "GaAs", "MAPbI3", "Ti", "Cr")
 # (A, B, C, lam2_numerator, (lo, hi) in um) wie in hpfem.materials
 _SELLMEIER = {
     "SiO2": (0.0, (0.6961663, 0.4079426, 0.8974794), (0.0684043**2, 0.1162414**2, 9.896161**2), True, (0.21, 6.7)),
@@ -43,7 +43,7 @@ _SELLMEIER = {
 }
 _CONSTANT = {"vacuum": 1.0, "air": 1.000293**2}
 
-LIBRARY = ["Si", "Ag", "Au", "Al", "GaAs", "MAPbI3", "SiO2", "TiO2", "water", "air", "vacuum"]
+LIBRARY = ["Si", "Ag", "Au", "Al", "Ti", "Cr", "GaAs", "MAPbI3", "SiO2", "TiO2", "water", "air", "vacuum"]
 CRYSTAL_KINDS = ("uniaxial", "biaxial", "tensor")
 
 _data_dir: Path | None = None

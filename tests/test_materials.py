@@ -60,3 +60,22 @@ def test_tabulated_with_data(tmp_path):
         assert fm.valid_range({"type": "library", "name": "Si"}) == (400.0, 500.0)
     finally:
         fm.set_repo(None)
+
+
+@pytest.mark.skipif(not fm.library_available(), reason="Materialdaten nicht gefunden")
+@pytest.mark.parametrize("name", ["Ti", "Cr"])
+def test_adhesion_metals(name):
+    spec = {"type": "library", "name": name}
+    lo, hi = fm.valid_range(spec)
+    assert lo < 600 < hi
+    n, k = fm.nk(spec, 600)
+    assert n > 0 and k > 2          # Metall mit Verlust
+    assert fm.eps_at(spec, 600).imag > 0
+
+
+@pytest.mark.skipif(not fm.library_available(), reason="Materialdaten nicht gefunden")
+def test_adhesion_metals_match_hpfem():
+    hp = pytest.importorskip("hpfem")
+    for name in ("Ti", "Cr"):
+        e = hp.materials.get(name).eps_r(2 * 3.141592653589793 * 299792458 / 600e-9)
+        assert fm.eps_at({"type": "library", "name": name}, 600) == pytest.approx(e, rel=1e-6)

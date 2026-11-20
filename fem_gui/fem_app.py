@@ -26,6 +26,8 @@ import fem_post as fp  # noqa: E402
 import fem_run as fr  # noqa: E402
 import fem_ui as ui  # noqa: E402
 import fem_axi_app  # noqa: E402
+import fem_emit as fe  # noqa: E402
+import fem_emit_app  # noqa: E402
 import fem_study_app  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -48,7 +50,8 @@ _old = [f"{name}: fehlt {', '.join(miss)}" for name, (mod, names) in _REQUIRED.i
 _worker = HERE / "fem_worker.py"
 if _worker.is_file():
     _wtext = _worker.read_text(encoding="utf-8", errors="replace")
-    for _f in ("fem_axi.py", "fem_axi_worker.py", "fem_axi_app.py", "fem_ui.py", "fem_study.py", "fem_study_app.py"):
+    for _f in ("fem_axi.py", "fem_axi_worker.py", "fem_axi_app.py", "fem_ui.py", "fem_study.py", "fem_study_app.py", "fem_emit.py", "fem_emit_app.py",
+               "fem_emit_worker.py", "fem_planar_worker.py"):
         if not (HERE / _f).is_file():
             _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
     _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml", "GratingRun", "adaptive_grating_point",
@@ -121,6 +124,8 @@ def p_eff():
 def geom_signature(model, ms):
     m = clean(model)
     keep = {k: m[k] for k in ("period_nm", "materials", "cover", "layers", "substrate", "shapes", "domain")}
+    if m.get("emitter"):                                           # position and width refine the mesh; the other emitter settings do not
+        keep["emitter"] = {k: m["emitter"][k] for k in ("x_nm", "y_nm", "sigma_nm")}
     return json.dumps([keep, ms, fr.wavelength_range(model)], sort_keys=True, default=str)
 
 
@@ -198,11 +203,13 @@ ver = S.ver
 # ------------------------------------------------------------------------------------------------------------------ sidebar
 st.sidebar.title("FEM-Modellwerkstatt")
 MODES = {"periodic": "Periodische Struktur (Gitter, Metaoberfläche)", "axi": "Rotationskörper: Resonator, Emitter",
-         "study": "Studie: Optimierung, Rekonstruktion, UQ"}
+         "study": "Studie: Optimierung, Rekonstruktion, UQ", "planar": "Emitter über Schichtstapel (ohne Netz)"}
 app_mode = st.sidebar.radio("Art des Modells", list(MODES), format_func=MODES.get, key="app_mode",
                             help="Periodisch: Elementarzelle mit Bloch-Rändern, ebene Welle (Streuung, Beugung). Rotationskörper: Struktur mit "
                                  "Rotationssymmetrie um z (Mikrosäule, Kugel, Scheibe), Resonanzen und Emission eines Dipols. Studie: Optimierung, "
-                                 "Parameterrekonstruktion und Unsicherheiten einer Gitterzelle mit dem Job-Runner der Bibliothek.")
+                                 "Parameterrekonstruktion und Unsicherheiten einer Gitterzelle mit dem Job-Runner der Bibliothek. Emitter über Schichtstapel: Dipol über "
+                                 "Schichten und Substrat, halbanalytisch (Purcell-Faktor, Kanäle, Detektoren, Fernfeld). Emitter in einer Gitterzelle: im Modus "
+                                 "„Periodische Struktur“ (Reiter 1 und Aufgabe „Emitter“).")
 if app_mode == "axi":
     fem_axi_app.sidebar_model()
 elif app_mode == "periodic":
@@ -459,6 +466,9 @@ if app_mode == "axi":
 if app_mode == "study":
     fem_study_app.render(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
     st.stop()
+if app_mode == "planar":
+    fem_emit_app.render_planar(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
+    st.stop()
 
 # ------------------------------------------------------------------------------------------------------------------ tabs
 st.title("FEM-Modellwerkstatt")
@@ -638,6 +648,9 @@ with t_model:
             except (ValueError, IndexError):
                 st.error("Detektoren: je Zeile Name; y; x von; x bis (Zahlen in nm).")
 
+        if not fg.isolated(model):
+            fem_emit_app.grating_model_panel(model, ver, float(inc["wavelength_nm"]), bool(FEATS.get("emitter")) or bool(lib.get("error")))
+
     with right:
         lam_lo, lam_hi = fr.wavelength_range(model)
         msgs = fg.validate(model, lam_lo)
@@ -773,8 +786,11 @@ with t_run:
     st.markdown("Der Solver (hp-FEM, Löser für TE, TM und konischen Einfall) rechnet die Streuung einer ebenen Welle an der periodischen Struktur: "
                 "Bloch-Randbedingung in x, absorbierende Schichten (PML) oben und ggf. unten, analytischer Schichtstapel als Hintergrund.")
     has_grating = bool(FEATS.get("grating")) or bool(lib.get("error"))          # unknown library: offer it, the worker reports a missing API
-    TASKS = {"scattering": "Streuung: Querschnitte, Detektoren, Fernfeld, Felder" if fg.isolated(model) else "Streuung: R, T, Beugungsordnungen, Felder", "resonances": "Resonanzen: Eigenmoden der offenen Zelle (komplexe Frequenz, Güte Q)"}
+    TASKS = {"scattering": "Streuung: Querschnitte, Detektoren, Fernfeld, Felder" if fg.isolated(model) else "Streuung: R, T, Beugungsordnungen, Felder", "resonances": "Resonanzen: Eigenmoden der offenen Zelle (komplexe Frequenz, Güte Q)",
+             "emitter": "Emitter: Dipol in der Zelle (Purcell-Faktor, Kanäle, Aperturen, Abstrahlmuster)"}
     task_avail = ["scattering"] + (["resonances"] if (FEATS.get("resonances") or lib.get("error")) and not fg.isolated(model) else [])
+    if "emitter" in model and not fg.isolated(model) and (FEATS.get("emitter") or lib.get("error")):
+        task_avail.append("emitter")
     if S.task not in task_avail:
         S.task = "scattering"
     S.task = st.radio("Aufgabe", task_avail, index=task_avail.index(S.task), format_func=TASKS.get, horizontal=True, key="task_pick",
@@ -790,7 +806,7 @@ with t_run:
     avail = (["grating", "grating_hp"] if has_grating else []) + ["conical"] + (["inplane", "inplane_hp"] if inplane_ok else [])
     if fg.isolated(model):
         avail = ["isolated"]
-    if S.task == "resonances":
+    if S.task in ("resonances", "emitter"):
         avail = ["grating"]
     if sv.get("engine") not in avail:
         sv["engine"] = avail[0]
@@ -802,6 +818,9 @@ with t_run:
                                      "In-Ebenen-Löser: nur TM in der Einfallsebene.")
     if S.task == "resonances":
         st.caption("Resonanzen rechnet immer hpfem.grating (Eigenwertproblem der offenen Zelle mit PML, PEC oben und unten).")
+    elif S.task == "emitter":
+        st.caption("Emitter rechnet immer hpfem.grating (M17: Array-Scan der Zellenprobleme mit PML oben und unten). Wellenlängen: der Durchlauf über λ "
+                   "(Reiter 1), sonst die Wellenlänge der Beleuchtung; Winkel und Polarisation der Beleuchtung gelten nicht.")
     elif not inplane_ok:
         st.caption("Der In-Ebenen-Löser rechnet nur TM mit φ = 0; die übrigen Löser rechnen TE, TM und konischen Einfall.")
     ad = sv["adaptive"]
@@ -874,6 +893,8 @@ with t_run:
     crystal_names = [n for n, v in S.model["materials"].items() if fm.is_crystal(v)]
     if crystal_names and not (sv["engine"] == "grating" and S.task == "scattering"):
         st.error(f"Kristalle ({', '.join(crystal_names)}) rechnet nur der Löser „hpfem.grating“ (Streuung); bitte diesen Löser wählen.")
+    if S.task == "emitter":
+        fem_emit_app.grating_run_panel(model, FEATS, lib)
     if S.task == "resonances":
         rs_ = S.resonance
         c = st.columns(3)
@@ -889,34 +910,38 @@ with t_run:
         sv["order_points"] = int(c[1].number_input("Stützstellen für die Fourier-Zerlegung", 16, 512, int(sv["order_points"]), 16, key="sv_pts"))
         eq = c[2].number_input("Zusätzliche Quadraturordnung", 0, 6, 0, key="sv_eq", help="Erhöht die Integrationsgenauigkeit; selten nötig.")
         sv["extra_quadrature_order"] = int(eq) if eq else None
-    st.subheader("Ausgabe")
     n_pts = max(len(fr.sweep_values(model["sweep"])), 1)
-    c = st.columns(3)
-    mp_["enabled"] = c[0].checkbox("Feldkarten speichern", value=bool(mp_["enabled"]), key="mp_en")
-    idx_opts = list(range(min(n_pts, 60)))
-    mp_["indices"] = c[1].multiselect("Karten für Punkte Nr.", idx_opts, default=[i for i in mp_["indices"] if i in idx_opts] or [0], key="mp_idx",
-                                      help="Nummer im Durchlauf (0 = erster Punkt).") if mp_["enabled"] else []
-    mp_["res_nm"] = float(c[2].number_input("Kartenauflösung (nm pro Pixel)", 1.0, 20.0, float(mp_["res_nm"]), 0.5, key="mp_res",
-                                           help="Feiner = schönere Karten und genauere Absorption aus dem Feld, aber längere Auswertung.")) if mp_["enabled"] else mp_["res_nm"]
-    if mp_["enabled"]:
+    do_pscan, pscan_txt = False, ""
+    if S.task == "emitter":
+        st.caption("Feldkarten und Konvergenzstudie gibt es für Emitter nicht; die Kosten der Rechnung erscheinen im Protokoll und unter Ergebnisse.")
+    else:
+        st.subheader("Ausgabe")
+        c = st.columns(3)
+        mp_["enabled"] = c[0].checkbox("Feldkarten speichern", value=bool(mp_["enabled"]), key="mp_en")
+        idx_opts = list(range(min(n_pts, 60)))
+        mp_["indices"] = c[1].multiselect("Karten für Punkte Nr.", idx_opts, default=[i for i in mp_["indices"] if i in idx_opts] or [0], key="mp_idx",
+                                          help="Nummer im Durchlauf (0 = erster Punkt).") if mp_["enabled"] else []
+        mp_["res_nm"] = float(c[2].number_input("Kartenauflösung (nm pro Pixel)", 1.0, 20.0, float(mp_["res_nm"]), 0.5, key="mp_res",
+                                               help="Feiner = schönere Karten und genauere Absorption aus dem Feld, aber längere Auswertung.")) if mp_["enabled"] else mp_["res_nm"]
+        if mp_["enabled"]:
+            c = st.columns(2)
+            mp_["triangulate"] = c[0].checkbox("Elementdarstellung speichern (exakt, Materialgrenzen scharf)", value=bool(mp_["triangulate"]), key="mp_tri",
+                                               help="Das Feld auf den unterteilten Dreiecken des Netzes (hpfem `triangulate`): Sprünge der Normalkomponente an Materialgrenzen bleiben "
+                                                    "scharf, das Material ist je Dreieck exakt bekannt. Braucht ein hpfem mit M15 F3, sonst wird nur das Raster gespeichert.")
+            if mp_["triangulate"]:
+                mp_["subdiv"] = int(c[1].slider("Unterteilung je Dreieck", 1, 6, int(mp_["subdiv"]), key="mp_sub",
+                                                help="n-fache Unterteilung jedes Dreiecks; 3 bis 4 genügt für Polynomordnung 4 bis 5."))
+            if S.task == "scattering":
+                mp_["hs"] = st.checkbox("Auch Magnetfeld H und Poynting-Vektor S speichern", value=bool(mp_["hs"]), key="mp_hs",
+                                        disabled=not (FEATS.get("h_field") or lib.get("error")),
+                                        help="H = rot E / (iωμ₀) und der zeitgemittelte Energiefluss S = ½ Re(E × H*) (hpfem M15 F12), als weitere Größen "
+                                             "der Feldkarten. Kostet etwas Zeit und Platz.")
+            else:
+                st.caption("Bei Resonanzen werden die Modenfelder (E, auf max |E| = 1 normiert) für die gewählten Punkte gespeichert.")
         c = st.columns(2)
-        mp_["triangulate"] = c[0].checkbox("Elementdarstellung speichern (exakt, Materialgrenzen scharf)", value=bool(mp_["triangulate"]), key="mp_tri",
-                                           help="Das Feld auf den unterteilten Dreiecken des Netzes (hpfem `triangulate`): Sprünge der Normalkomponente an Materialgrenzen bleiben "
-                                                "scharf, das Material ist je Dreieck exakt bekannt. Braucht ein hpfem mit M15 F3, sonst wird nur das Raster gespeichert.")
-        if mp_["triangulate"]:
-            mp_["subdiv"] = int(c[1].slider("Unterteilung je Dreieck", 1, 6, int(mp_["subdiv"]), key="mp_sub",
-                                            help="n-fache Unterteilung jedes Dreiecks; 3 bis 4 genügt für Polynomordnung 4 bis 5."))
-        if S.task == "scattering":
-            mp_["hs"] = st.checkbox("Auch Magnetfeld H und Poynting-Vektor S speichern", value=bool(mp_["hs"]), key="mp_hs",
-                                    disabled=not (FEATS.get("h_field") or lib.get("error")),
-                                    help="H = rot E / (iωμ₀) und der zeitgemittelte Energiefluss S = ½ Re(E × H*) (hpfem M15 F12), als weitere Größen "
-                                         "der Feldkarten. Kostet etwas Zeit und Platz.")
-        else:
-            st.caption("Bei Resonanzen werden die Modenfelder (E, auf max |E| = 1 normiert) für die gewählten Punkte gespeichert.")
-    c = st.columns(2)
-    do_pscan = c[0].checkbox("Konvergenzstudie in p (statt des Durchlaufs)", key="do_pscan", disabled=S.task != "scattering",
-                             help="Rechnet den ersten Punkt mit mehreren Polynomordnungen und zeigt Fehler gegen Freiheitsgrade.") and S.task == "scattering"
-    pscan_txt = c[1].text_input("Ordnungen", "2, 3, 4, 5", key="pscan_txt", disabled=not do_pscan)
+        do_pscan = c[0].checkbox("Konvergenzstudie in p (statt des Durchlaufs)", key="do_pscan", disabled=S.task != "scattering",
+                                 help="Rechnet den ersten Punkt mit mehreren Polynomordnungen und zeigt Fehler gegen Freiheitsgrade.") and S.task == "scattering"
+        pscan_txt = c[1].text_input("Ordnungen", "2, 3, 4, 5", key="pscan_txt", disabled=not do_pscan)
 
     lam_lo, lam_hi = fr.wavelength_range(model)
     problems = [t for l, t in fg.validate(model, lam_lo) if l == "error"]
@@ -928,6 +953,8 @@ with t_run:
                 except Exception as exc:
                     problems.append(str(exc))
                     break
+    if S.task == "emitter" and "emitter" in model:
+        problems += [t for l, t in fe.emitter_validate(model, model["emitter"], lam_lo) if l == "error"]
     problems = list(dict.fromkeys(problems))
     sig_now = geom_signature(model, S.mesh_settings)
     mesh_ok = S.mesh_stats is not None and S.mesh_sig == sig_now and S.mesh_stats["periodic_ok"]
@@ -954,6 +981,8 @@ with t_run:
     if lib.get("error"):
         st.warning("hpfem lässt sich im eingestellten Python nicht laden (Seitenleiste): die Rechnung wird scheitern.")
     n_runs = n_pts if not do_pscan else len([v for v in pscan_txt.split(",") if v.strip()])
+    if S.task == "emitter":
+        n_runs = len(fe.emitter_wavelengths(model))
     st.caption(f"{n_runs} Rechnung(en)" + (f", etwa {est_dofs(S.mesh_stats['cells'], p_eff()):,} Freiheitsgrade je Rechnung".replace(",", ".") if S.mesh_stats else ""))
     if S.mesh_stats and est_dofs(S.mesh_stats["cells"], p_eff()) > 400000:
         st.warning("Über 400 000 Freiheitsgrade je Rechnung: das dauert lange und braucht viel Speicher.")
@@ -1052,21 +1081,27 @@ with t_res:
             st.success(f"Gespeichert unter {arch / name_arch}")
         meta = res["meta"]
         task = meta.get("task", "scattering")
-        if fg.isolated(rmodel):
+        if task == "emitter":
+            df = None
+        elif fg.isolated(rmodel):
             df = fp.iso_dataframe(res["points"], mode)
         else:
             df = fp.results_dataframe(res, mode) if task == "scattering" else fp.resonances_dataframe(res["points"])
         errs = [p for p in res["points"] if "error" in p] + [p for p in res.get("pscan", []) if "error" in p]
         for p in errs:
-            st.error(f"Punkt {p.get('index', p.get('order'))}: {p['error']}")
-        if res.get("cancelled"):
+            if task != "emitter":
+                st.error(f"Punkt {p.get('index', p.get('order'))}: {p['error']}")
+        if res.get("cancelled") and task != "emitter":
             st.warning("Die Rechnung wurde abgebrochen; es fehlen Punkte.")
         vi_ = meta.get("version_info") or {}
-        st.caption(f"{meta['model']} · {'Resonanzen · ' if task == 'resonances' else ''}{ENGINE_SHORT.get(meta.get('engine', 'conical'), '')} · "
-                   f"{SWEEP_MODES.get(mode, mode)} · {'Start-' if meta.get('engine', '').endswith('_hp') else ''}p = {meta['order']} · "
-                   f"{meta['cells']} Dreiecke (Startnetz) · {len([p for p in res['points'] if 'error' not in p])} von {len(res['points'])} Punkten · "
-                   f"Start {meta['started']}" + (f" · hpfem {vi_['hpfem']}" if vi_.get("hpfem") else ""))
-    if res is not None and fg.isolated(rmodel):
+        if task != "emitter":
+            st.caption(f"{meta['model']} · {'Resonanzen · ' if task == 'resonances' else ''}{ENGINE_SHORT.get(meta.get('engine', 'conical'), '')} · "
+                       f"{SWEEP_MODES.get(mode, mode)} · {'Start-' if meta.get('engine', '').endswith('_hp') else ''}p = {meta['order']} · "
+                       f"{meta['cells']} Dreiecke (Startnetz) · {len([p for p in res['points'] if 'error' not in p])} von {len(res['points'])} Punkten · "
+                       f"Start {meta['started']}" + (f" · hpfem {vi_['hpfem']}" if vi_.get("hpfem") else ""))
+    if res is not None and task == "emitter":
+        fem_emit_app.grating_results(view, res)
+    elif res is not None and fg.isolated(rmodel):
         iso_results(view, res, rmodel, mode)
     elif res is not None and task == "resonances":
         sub = st.tabs(["Resonanzen", "Modenfelder", "Tabelle und Export"])

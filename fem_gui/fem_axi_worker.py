@@ -45,6 +45,12 @@ def say(*a):
     print(*a, flush=True)
 
 
+def h_dp(hpfem):
+    """hpfem.dataports (imported on demand)."""
+    import hpfem.dataports as dp
+    return dp
+
+
 class Job:
     def __init__(self, hpfem, job, folder):
         self.h, self.job, self.folder = hpfem, job, Path(folder)
@@ -542,6 +548,105 @@ def emitter_surfaces(job):
     return dict(around=around, top=top, bottom=bottom, box=box, far_mode=far_mode, emitter_material=job.names[(src_tags[0] - 1) % fa.TAG_SOURCE], z=float(em["z_nm"]))
 
 
+
+# ------------------------------------------------------------------------------------------------- emitter off the axis (hp-FEM 0.5)
+def shift_msh(src, dst, dy_nm):
+    """Copy of an MSH 4.1 ASCII file with every node moved by -dy_nm in y (the meridian z): the library measures the planar stack from its top
+    interface at z = 0."""
+    lines = Path(src).read_text(encoding="utf-8").splitlines()
+    out, i = [], 0
+    while i < len(lines):
+        out.append(lines[i])
+        if lines[i].strip() == "$Nodes":
+            i += 1
+            out.append(lines[i])
+            blocks = int(lines[i].split()[0])
+            i += 1
+            for _ in range(blocks):
+                n = int(lines[i].split()[3])
+                out.append(lines[i])
+                i += 1
+                out += lines[i:i + n]                                  # node tags
+                i += n
+                for k in range(n):
+                    x, y, z = lines[i + k].split()[:3]
+                    out.append(f"{x} {float(y) - dy_nm!r} {z}")
+                i += n
+            continue
+        i += 1
+    Path(dst).write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def offaxis_run(job, values, em, folder, out, flush):
+    """Task emitter with emitter["radii_nm"]: hpfem.dataports.axisymmetric_emitter_response (all azimuthal orders of the Gaussian dipole at the
+    distances rho from the axis; A_tot, A_rad, A_det as Cartesian tensors at (rho, 0, z)); one call per wavelength."""
+    import math
+
+    import hpfem.dataports as dp
+    h, model, lay = job.h, job.model, job.lay
+    plan = fa.stack_layers(model)
+    top_nm = float(plan["top_nm"]) if plan else float(lay["z_lo"])      # without planar layers: a homogeneous "stack" whose interface lies on a mesh line
+    mesh = job.mesh
+    if abs(top_nm) > 1e-9:
+        shift_msh(job.folder / "mesh.msh", job.folder / "mesh_shifted.msh", top_nm)
+        mesh = h.read_gmsh(str(job.folder / "mesh_shifted.msh"), NM, 2)
+    radii_nm = fa.emitter_radii(model)
+    z0 = (float(em["z_nm"]) - top_nm) * NM
+    loc = h.PointLocator2D(mesh)
+    for k in range(40):                                                   # the point locator of the library misses single points (bucket edges): nudge by 0.1 nm steps
+        eps_pos = 1e-10 * k
+        if all(loc.locate(np.array([r * NM + (eps_pos if r > 0 else 0.0), z0 + eps_pos])) is not None for r in radii_nm):
+            break
+    else:
+        raise RuntimeError("Der Emitter liegt in keiner Zelle des Netzes (Position und Abstände prüfen)")
+    if eps_pos:
+        say(f"  positions moved by {eps_pos * 1e9:.1f} nm (point locator)")
+    z = z0 + eps_pos
+    sigma = float(em["sigma_nm"]) * NM
+    pml = dict(r=lay["pml"] * NM, top=lay["pml"] * NM, bottom=lay["pml"] * NM)
+    na = float(em.get("offaxis_na") or 0.0)
+    n = len(values)
+    out["offaxis"] = dict(radii_nm=radii_nm, z_nm=float(em["z_nm"]), sigma_nm=float(em["sigma_nm"]), stack_top_nm=top_nm, na=na)
+    for i, lam in enumerate(values):
+        if job.cancelled():
+            say("CANCELLED")
+            out["cancelled"] = True
+            flush()
+            return 0
+        say(f"PROGRESS {i + 1}/{n} lambda = {lam:.3f} nm (off the axis: rho = {', '.join(f'{r:g}' for r in radii_nm)} nm)")
+        t0 = time.time()
+        try:
+            _, eps = job.materials(lam)
+            mats = {int(t): h.Material(complex(eps[job.names[(t - 1) % fa.TAG_SOURCE]])) for t in job.tags}
+            cover = h.Material(complex(fm.eps_at(model["materials"][model["background"]], lam)))
+            if plan:
+                stack, _lossless = layer_stack(job, lam)
+            else:
+                stack = h.LayerStack3D(cover, [], cover, 0.0)
+            n_host = float(np.sqrt(complex(fm.eps_at(model["materials"][model["background"]], lam))).real)
+            dets = None
+            if na > 0:
+                t_na = math.asin(min(na / n_host, 1.0))
+                dets = [dp.Detector(f"NA {na:g} oben", "cover", 0.0, t_na), dp.Detector("oben außerhalb der Apertur", "cover", t_na, 0.5 * math.pi),
+                        dp.Detector("Substrat", "substrate")]
+            resp = dp.axisymmetric_emitter_response(mesh, mats, stack, lam * NM, [z], pml=pml, order=job.order, sigma=sigma, axis_tag=fa.TAG_AXIS,
+                                                    detectors=dets, radii=[r * NM + (eps_pos if r > 0 else 0.0) for r in radii_nm])
+            t = resp.table
+            a_tot, a_rad, a_det = t.a_tot[:, 0, 0], t.a_rad[:, 0, 0], t.a_det[:, 0, 0]       # (nr,3,3), (nr,3,3), (nr,D,3,3)
+            res = dict(index=i, lam_nm=float(lam), offaxis=True, radii_nm=radii_nm, z_nm=float(em["z_nm"]), n_host=float(t.n_host),
+                       detectors=list(t.detectors), convergence=resp.convergence, time_s=time.time() - t0,
+                       A_tot=a_tot.tolist(), A_rad=a_rad.tolist(), A_det=a_det.tolist())
+            (Path(folder) / f"table_{i}.json").write_text(t.to_json(), encoding="utf-8")
+            out["points"].append(res)
+            say(f"  {res['time_s']:.1f} s: F_xx = {a_tot[0, 0, 0]:.4g}, F_zz = {a_tot[0, 2, 2]:.4g} at rho = {radii_nm[0]:g} nm")
+        except Exception as exc:
+            say(f"ERROR point {i}: {exc}")
+            out["points"].append(dict(index=i, lam_nm=float(lam), error=str(exc)))
+        flush()
+    say("DONE")
+    return 0
+
+
 # ------------------------------------------------------------------------------------------------------------------ main
 def main(argv=None) -> int:
     argv = list(argv or sys.argv[1:])
@@ -623,6 +728,12 @@ def main(argv=None) -> int:
         else:
             em = model["emitter"]
             sw = em["sweep"]
+            if fa.offaxis(model):                                      # emitter off the axis: the library's response table (hp-FEM 0.5)
+                if sw["mode"] == "resonance":
+                    raise RuntimeError("Emitter außerhalb der Achse: das Spektrum „um die Resonanz“ gibt es hier nicht; „fester Bereich“ wählen")
+                if not hasattr(h_dp(hpfem), "axisymmetric_emitter_response"):
+                    raise RuntimeError("Emitter außerhalb der Achse brauchen hp-FEM ab 0.5 (hpfem.dataports.axisymmetric_emitter_response mit radii)")
+                return offaxis_run(job, fa.sweep_values(sw), em, folder, out, flush)
             if sw["mode"] == "resonance":
                 rs = model["resonance"]
                 m = 0 if em["orientation"] == "axial" else 1

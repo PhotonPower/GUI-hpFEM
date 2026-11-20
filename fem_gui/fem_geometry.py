@@ -428,6 +428,12 @@ def preview_figure(model, show_neighbours=True, figsize=(7.2, 6.0)):
                                  alpha=alpha, zorder=3))
     for y in lay["interfaces"]:
         ax.axhline(y, color="k", lw=0.6, ls="--", zorder=2)
+    em = model.get("emitter")
+    if em:                                                    # emitter (hp-FEM M17): the dipole and the 6 sigma disc that must hold one medium
+        for off in offsets:
+            ax.plot([em["x_nm"] + off], [em["y_nm"]], marker="*", color="gold", mec="k", ms=14, zorder=6, ls="none",
+                    label="Emitter" if off == 0.0 else None)
+            ax.add_patch(plt.Circle((em["x_nm"] + off, em["y_nm"]), 6 * float(em["sigma_nm"]), fill=False, ec="k", ls=":", lw=0.8, zorder=6))
     for x in (0, P):
         ax.axvline(x, color="crimson", lw=1.0, ls=":", zorder=4)
     ax.text(P / 2, lay["y_pml_top"], "PML", ha="center", va="top", fontsize=8, color="0.3", zorder=5)
@@ -714,6 +720,19 @@ def build_mesh(model, ms, out_dir, log=print):
         gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeMax", max(size_of.values()))
+        em = model.get("emitter")
+        if em and not iso:                                        # emitter (hp-FEM M17): the Gaussian source of width sigma needs small cells within 6 sigma
+            sg = float(em["sigma_nm"])
+            fld = gmsh.model.mesh.field
+            ball = fld.add("Ball")
+            fld.setNumber(ball, "XCenter", float(em["x_nm"]))
+            fld.setNumber(ball, "YCenter", float(em["y_nm"]))
+            fld.setNumber(ball, "ZCenter", 0.0)
+            fld.setNumber(ball, "Radius", 6.0 * sg)
+            fld.setNumber(ball, "VIn", max(2.0 * sg, 0.5))
+            fld.setNumber(ball, "VOut", max(size_of.values()))
+            fld.setNumber(ball, "Thickness", 8.0 * sg)
+            fld.setAsBackgroundMesh(ball)
         gmsh.model.mesh.generate(2)
         if curved:
             gmsh.model.mesh.setOrder(2)

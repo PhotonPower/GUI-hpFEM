@@ -71,6 +71,7 @@ def mesh_task(model):
 def signature(model, ms):
     keep = {k: model.get(k) for k in ("materials", "background", "substrate", "layers", "parts", "domain")}
     keep["emitter"] = {k: model["emitter"][k] for k in ("z_nm", "sigma_nm")}
+    keep["emitter"]["radii_nm"] = model["emitter"].get("radii_nm") or None
     keep["scattering"] = model["scattering"]["sweep"]
     return json.dumps([keep, ms, mesh_range(model)], sort_keys=True, default=str)
 
@@ -298,6 +299,27 @@ def tab_model(model, ver):
                                        "und 40 für den Hintergrund (Mikrosäule, schnell, p = 2: etwa 15 min). Die Summe folgt der direkten Rechnung "
                                        "auf wenige Prozent.")
 
+        off = st.checkbox("Emitter außerhalb der Achse (hp-FEM 0.5)", value=bool(em.get("radii_nm")), key=f"ax_off_{ver}",
+                          help="Der Dipol sitzt bei den Abständen ρ von der Achse. Die Gauß-Quelle wird in alle Azimutordnungen entwickelt (m ≥ 0, Spiegelsymmetrie); "
+                               "die Bibliothek (dataports.axisymmetric_emitter_response) liefert die Antworttabelle: Purcell-Tensor A_tot, abgestrahlte Leistung A_rad "
+                               "und Detektoranteile als kartesische Tensoren bei (ρ, 0, z), alle drei Dipolrichtungen zugleich. ρ = 0 ist die Achse. "
+                               "Ausdehnung σ: der Kasten 6σ um den Emitter muss in einem Material liegen. Nur Spektrum „fester Bereich“.")
+        if off:
+            c = st.columns([3, 1])
+            txt = c[0].text_input("Abstände ρ von der Achse (nm), durch Komma", ", ".join(f"{v:g}" for v in (em.get("radii_nm") or [0.0, 100.0, 200.0])),
+                                  key=f"ax_rho_{ver}")
+            try:
+                em["radii_nm"] = sorted({float(v) for v in txt.replace(";", ",").split(",") if v.strip()})
+            except ValueError:
+                st.error("Abstände: Zahlen durch Komma.")
+            em["offaxis_na"] = float(c[1].number_input("NA oben", 0.0, 2.0, float(em.get("offaxis_na") or 0.0), 0.1, key=f"ax_na_{ver}",
+                                                       help="Erzeugt einen Detektorbereich mit dieser numerischen Apertur im Umgebungsmedium (0: ohne). "
+                                                            "Sonst: ganze obere und untere Halbebene."))
+            if not em["radii_nm"]:
+                em.pop("radii_nm", None)
+        else:
+            em.pop("radii_nm", None)
+
         st.subheader("Ebene Welle (Streuung an Partikeln)")
         sc = model["scattering"]
         c = st.columns(4)
@@ -481,6 +503,41 @@ def tab_run(model, work, ctx):
             st.code(fr.read_log(rd, tail=80))
 
 
+def offaxis_results(view, res):
+    """Results of an emitter off the axis (dataports.axisymmetric_emitter_response): Purcell tensor, radiated share, table, BindOptiX envelope."""
+    pts = res.get("points", [])
+    for p in pts:
+        if "error" in p:
+            st.error(f"λ = {p['lam_nm']:.3f} nm: {p['error']}")
+    ok = [p for p in pts if p.get("offaxis") and "error" not in p]
+    if not ok:
+        return
+    info = res.get("offaxis", {})
+    st.caption(f"Emitter bei z = {info.get('z_nm', ok[0]['z_nm']):g} nm, σ = {info.get('sigma_nm', 0):g} nm, Abstände ρ = "
+               f"{', '.join(f'{r:g}' for r in ok[0]['radii_nm'])} nm · alle Azimutordnungen · {len(ok)} Wellenlänge(n)")
+    sub = st.tabs(["Purcell-Tensor", "Abstrahlung", "Tabelle und Export"])
+    with sub[0]:
+        ui.show_fig(fa.fig_offaxis(ok, "purcell"), "purcell_ausserhalb.png", "ax_dl_off_p")
+        st.caption("Diagonale des Tensors A_tot bei (ρ, 0, z), auf den freien Dipol im Umgebungsmedium bezogen: F_ρ Dipol radial (x), F_φ azimutal (y), "
+                   "F_z axial. Auf der Achse sind F_ρ und F_φ gleich. Der Nebendiagonalterm A_xz (Tabelle) koppelt radialen und axialen Dipol.")
+    with sub[1]:
+        ui.show_fig(fa.fig_offaxis(ok, "radiated"), "abstrahlung_ausserhalb.png", "ax_dl_off_r")
+        st.caption("A_rad / A_tot: der Anteil der abgegebenen Leistung, der ins Fernfeld kommt (der Rest ist absorbiert oder in geführten Moden).")
+        conv = ok[0]["convergence"]
+        if conv:
+            st.caption("Prüfung der Bibliothek: " + ", ".join(f"{k} = {v:.3g}" if isinstance(v, float) else f"{k} = {v}" for k, v in conv.items()))
+    with sub[2]:
+        df = fa.offaxis_dataframe(ok)
+        ui.table_show(df)
+        st.download_button("Tabelle (CSV)", ui.csv_bytes(df), file_name="emitter_ausserhalb_der_achse.csv", mime="text/csv", key="ax_dl_off_csv")
+        k = st.selectbox("Wellenlänge", range(len(ok)), format_func=lambda i: f"{ok[i]['lam_nm']:g} nm", key="ax_off_env_lam")
+        f = Path(view) / f"table_{ok[k]['index']}.json"
+        if f.is_file():
+            st.download_button("Emitter-Antworttabelle (JSON-Umschlag raytatouille-result, EmitterResponseTable)", f.read_bytes(),
+                               file_name=f"emitter_response_axi_{ok[k]['lam_nm']:g}nm.json", mime="application/json", key="ax_dl_off_env",
+                               help="Gitter (ρ in µm, 0, z in µm); das Datenport-Format der Bibliothek für BindOptiX.")
+
+
 def tab_results(work):
     arch = work / "archiv"
     c = st.columns([3, 2, 3])
@@ -537,6 +594,8 @@ def tab_results(work):
                 field_view(view, list(lab), lab.get, rmodel, "ax_mode")
     elif meta["task"] == "scattering":
         scattering_results(view, res, rmodel)
+    elif any(p.get("offaxis") for p in res.get("points", [])) or res.get("offaxis"):
+        offaxis_results(view, res)
     else:
         pts = res.get("points", [])
         ok = [p for p in pts if "error" not in p]
