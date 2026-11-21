@@ -29,6 +29,7 @@ import fem_axi_app  # noqa: E402
 import fem_emit as fe  # noqa: E402
 import fem_emit_app  # noqa: E402
 import fem_study_app  # noqa: E402
+import fem_wg_app  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 S = st.session_state
@@ -51,7 +52,7 @@ _worker = HERE / "fem_worker.py"
 if _worker.is_file():
     _wtext = _worker.read_text(encoding="utf-8", errors="replace")
     for _f in ("fem_axi.py", "fem_axi_worker.py", "fem_axi_app.py", "fem_ui.py", "fem_study.py", "fem_study_app.py", "fem_emit.py", "fem_emit_app.py",
-               "fem_emit_worker.py", "fem_planar_worker.py"):
+               "fem_emit_worker.py", "fem_wg.py", "fem_wg_app.py", "fem_wg_worker.py"):
         if not (HERE / _f).is_file():
             _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
     _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml", "GratingRun", "adaptive_grating_point",
@@ -203,13 +204,13 @@ ver = S.ver
 # ------------------------------------------------------------------------------------------------------------------ sidebar
 st.sidebar.title("FEM-Modellwerkstatt")
 MODES = {"periodic": "Periodische Struktur (Gitter, Metaoberfläche)", "axi": "Rotationskörper: Resonator, Emitter",
-         "study": "Studie: Optimierung, Rekonstruktion, UQ", "planar": "Emitter über Schichtstapel (ohne Netz)"}
+         "study": "Studie: Optimierung, Rekonstruktion, UQ", "waveguide": "Wellenleiter und Ports"}
 app_mode = st.sidebar.radio("Art des Modells", list(MODES), format_func=MODES.get, key="app_mode",
                             help="Periodisch: Elementarzelle mit Bloch-Rändern, ebene Welle (Streuung, Beugung). Rotationskörper: Struktur mit "
                                  "Rotationssymmetrie um z (Mikrosäule, Kugel, Scheibe), Resonanzen und Emission eines Dipols. Studie: Optimierung, "
-                                 "Parameterrekonstruktion und Unsicherheiten einer Gitterzelle mit dem Job-Runner der Bibliothek. Emitter über Schichtstapel: Dipol über "
-                                 "Schichten und Substrat, halbanalytisch (Purcell-Faktor, Kanäle, Detektoren, Fernfeld). Emitter in einer Gitterzelle: im Modus "
-                                 "„Periodische Struktur“ (Reiter 1 und Aufgabe „Emitter“).")
+                                 "Parameterrekonstruktion und Unsicherheiten einer Gitterzelle mit dem Job-Runner der Bibliothek. Wellenleiter und Ports: Bauteil in der Chipebene "
+                                 "zwischen modalen Ports (S-Matrix) und Moden des Querschnitts. Emitter in einer Gitterzelle: im Modus „Periodische Struktur“ "
+                                 "(Reiter 1 und Aufgabe „Emitter“).")
 if app_mode == "axi":
     fem_axi_app.sidebar_model()
 elif app_mode == "periodic":
@@ -466,8 +467,8 @@ if app_mode == "axi":
 if app_mode == "study":
     fem_study_app.render(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
     st.stop()
-if app_mode == "planar":
-    fem_emit_app.render_planar(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
+if app_mode == "waveguide":
+    fem_wg_app.render_waveguide(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
     st.stop()
 
 # ------------------------------------------------------------------------------------------------------------------ tabs

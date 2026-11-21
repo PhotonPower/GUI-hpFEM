@@ -353,6 +353,50 @@ def sweep_values(sw):
     return [float(round(v, 6)) for v in np.linspace(sw["start"], sw["stop"], n)]
 
 
+def crystal_problems(model, task="resonance"):
+    """[(level, text)] for anisotropic materials: the solver reads the tensor in (r, phi, z) and needs it diagonal there; the surrounding medium, the
+    layered background (substrate and layers for scattering and emitters) and the host of an emitter must be isotropic."""
+    out = []
+    used = {p["material"] for p in model["parts"]} | {ly["material"] for ly in model.get("layers", [])} | {model["background"]}
+    if model.get("substrate"):
+        used.add(model["substrate"])
+    for n_ in sorted(used):
+        spec = model["materials"].get(n_)
+        if not spec or not fm.is_crystal(spec):
+            continue
+        try:
+            fm.axi_diagonal(spec)
+        except ValueError as exc:
+            out.append(("error", f"{n_}: {exc}"))
+    crystal = {n_ for n_, spec in model["materials"].items() if fm.is_crystal(spec)}
+    if model["background"] in crystal:
+        out.append(("error", f"Das Umgebungsmaterial „{model['background']}“ muss isotrop sein (PML, einfallende Welle und Abstrahlung)."))
+    if task in ("scattering", "emitter"):
+        layered = ({ly["material"] for ly in model.get("layers", [])} | ({model["substrate"]} if model.get("substrate") else set())) & crystal
+        if layered:
+            out.append(("error", f"Kristall in Substrat oder Schicht ({', '.join(sorted(layered))}): der geschichtete Hintergrund (Fernfeld, einfallende Welle) "
+                                 "ist nur isotrop möglich. Kristalle bitte als Teile (Zylinder, Kugel, …) einsetzen; für Resonanzen gehen auch Schichten."))
+    if task == "emitter" and offaxis(model) and crystal & used:
+        out.append(("error", f"Emitter außerhalb der Achse mit Kristall ({', '.join(sorted(crystal & used))}): hpfem.dataports.axisymmetric_emitter_response "
+                             "nimmt nur isotrope Materialien (hp-FEM 0.5). Abstände von der Achse abschalten (der Emitter auf der Achse rechnet mit "
+                             "Kristallen) oder das Material isotrop wählen."))
+    if task == "emitter":
+        try:
+            em = model["emitter"]
+            a = source_box(model)
+            z = float(em["z_nm"])
+            mats = set()
+            for rho in emitter_radii(model):
+                R, Z = np.meshgrid(np.linspace(max(rho - a, 0.0), rho + a, 7), np.linspace(z - a, z + a, 41))
+                mats |= set(materials_at(model, R.ravel(), Z.ravel()))
+            if mats & crystal:
+                out.append(("error", f"Der Emitter sitzt in einem Kristall ({', '.join(sorted(mats & crystal))}): der Wirt des Dipols muss isotrop sein "
+                                     "(Larmor-Referenz)."))
+        except Exception:
+            pass
+    return out
+
+
 def validate(model, task="resonance"):
     """[(level, text)] of the model."""
     out = []
@@ -393,6 +437,7 @@ def validate(model, task="resonance"):
             out.append(("error", f"Teil {i + 1}: der Ringradius muss größer als der Querschnittsradius sein (sonst „Kugel“ oder „Polygon“)."))
         if t in ("sphere", "ellipsoid") and min(p.get("radius", 1), p.get("r_semi", 1), p.get("z_semi", 1)) <= 0:
             out.append(("error", f"Teil {i + 1}: Radien > 0 nötig."))
+    out += crystal_problems(model, task)
     for lam in (lam_lo, lam_hi):
         for n_, spec in model["materials"].items():
             try:

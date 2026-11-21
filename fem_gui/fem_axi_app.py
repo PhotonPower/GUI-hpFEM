@@ -176,7 +176,7 @@ def tab_model(model, ver):
     with left:
         model["name"] = st.text_input("Name des Modells", value=model["name"], key=f"ax_name_{ver}")
         st.subheader("Materialien")
-        ui.material_editor(model, ver, float(rs["wavelength_nm"]), used(model), rename, bump, prefix="ax_")
+        ui.material_editor(model, ver, float(rs["wavelength_nm"]), used(model), rename, bump, prefix="ax_", crystals=True, axi=True)
         names = list(model["materials"])
         st.subheader("Umgebung und Substrat")
         c = st.columns(2)

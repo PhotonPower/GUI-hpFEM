@@ -172,19 +172,13 @@ Summe weicht von der direkten Rechnung um wenige Prozent ab (eingefrorene PML). 
 **Emitter auf der Achse** koppeln nur an m = 0 (axial) und m = ±1 (senkrecht). Flüstergalerie-Moden (große m) einer Scheibe sind deshalb nur als
 Resonanzen zugänglich (Vorlage „Mikroscheibe“, m = 12 bei etwa 975 nm).
 
+**Kristalle (anisotrope Teile).** Rotationskörper dürfen anisotrope Teile enthalten (Materialeditor, Typ „Kristall“, auch als Vorlage: Saphir, Quarz, Kalkspat, LiNbO3, Rutil, MgF2 mit konstanten Indizes bei λ0). Die Symmetrieachse ist z, im Tensor gilt x → r, y → φ. Erlaubt sind die optische Achse längs z, radial oder azimutal und diagonale Tensoren; verkippte Achsen lehnt die App mit Hinweis ab. Umgebung und Emitterwirt müssen isotrop sein, Substrat und Schichten nur bei Streuung und Emitter; Resonanzen erlauben Kristall in Schichten (nicht nachgerechnet). Emitter außerhalb der Achse gehen in hp-FEM 0.5 nicht mit Kristallen. Gemessen (Kugel r = 300 nm, p = 3): Tensor ∝ I gibt dieselben Moden und σ_sca wie isotrop (bitgleich); n_o = 2,4, n_e = 2,7 verschiebt die Mode m = 1 von 696,6 nm auf 674,1 nm.
+
 ## Emitter (hp-FEM 0.5)
 
-Drei Wege, einen Dipol zu rechnen. Alle Faktoren sind auf den freien Dipol im selben Medium bezogen (frei = 1).
+Zwei Wege, einen Dipol zu rechnen. Alle Faktoren sind auf den freien Dipol im selben Medium bezogen (frei = 1).
 
-**1. Planar, ohne Netz (Seitenleiste „Art des Modells“ → „Emitter über Schichtstapel“).** Ein Dipol in einem verlustfreien Medium (Wasser, Luft) über Schichten und
-Substrat (`dataports.planar_emitter_response`, Sommerfeld/Fresnel). Reiter 1: Materialien, Stapel, Wellenlänge(n), Höhen über der Oberkante, Detektorbereiche als
-numerische Aperturen (je Seite, ohne Überlappung). Reiter 2 rechnet (etwa 5 s je Wellenlänge). Reiter 3: **Purcell-Faktor** (F_∥, F_⊥, isotrop über der Höhe, eine Linie je
-Wellenlänge, logarithmisch), **Kanäle und Detektoren** (wohin die Leistung geht: ins Einfallsmedium, ins Substrat, absorbiert oder geführt; Anteile der
-Detektorbereiche), **Abstrahlmuster** (polar, oben und unten) und **Tabelle und Export** (CSV; der JSON-Umschlag `EmitterResponseTable` mit A_tot, A_rad, A_det für BindOptiX).
-Vorlagen: Au-Film in Wasser (Auslöschung und Plasmonen), Glas, Ag mit Ti-Haftschicht. Das Substrat darf verlustbehaftet sein (es strahlt dann nichts aus); der Wirt muss
-verlustfrei sein, Kristalle gibt es hier nicht. Dient auch als Referenz für die beiden anderen Wege.
-
-**2. In der Gitterzelle (Modus „Periodische Struktur“).** Reiter 1, Abschnitt „Emitter in der Zelle“: Haken setzen, Position x, y (y = 0 an der Oberkante des
+**1. In der Gitterzelle (Modus „Periodische Struktur“).** Reiter 1, Abschnitt „Emitter in der Zelle“: Haken setzen, Position x, y (y = 0 an der Oberkante des
 Stapels) und Breite σ der Gauß-Quelle. Die App prüft, dass im Umkreis von 6σ nur ein verlustfreies Medium liegt und die Quelle 6σ vom Zellrand entfernt ist; die Vorschau
 zeigt Stern und 6σ-Kreis, das Netz wird dort auf etwa 2σ verfeinert (Reiter 2 neu erzeugen). Reiter 3, Aufgabe **Emitter** (nur mit Emitter im Modell):
 
@@ -201,7 +195,7 @@ Vorlage (Stützstellen 4/3, Winkelnetz 8×16) 2996 statt 693 Zellenprobleme je W
 gewählt werden; sonst ist das Ergebnis falsch. Die Quelle sitzt in einem verlustfreien Medium (auch im Inneren einer Form möglich, solange 6σ in einem Material liegen);
 Kristalle und isolierte Strukturen gibt es hier nicht.
 
-**3. Rotationskörper, auch außerhalb der Achse (Modus „Rotationskörper“, Emitter).** Mit dem Haken „Emitter außerhalb der Achse“ und einer Liste von Abständen ρ rechnet die
+**2. Rotationskörper, auch außerhalb der Achse (Modus „Rotationskörper“, Emitter).** Mit dem Haken „Emitter außerhalb der Achse“ und einer Liste von Abständen ρ rechnet die
 Bibliothek (`dataports.axisymmetric_emitter_response(radii=…)`) die Gauß-Quelle mit allen Azimutordnungen. Ergebnis je Wellenlänge und Abstand: Purcell-Tensor
 (F_ρ radial, F_φ azimutal, F_z axial, dazu der Kreuzterm A_xz), abgestrahlter Anteil, Detektoranteile (optional ein Bereich mit NA oben), Tabelle und JSON-Umschlag. Alle drei
 Dipolrichtungen kommen zugleich; die Richtung „axial/senkrecht“ der Achsen-Rechnung gilt hier nicht. Das Netz bekommt einen Kasten von ±6σ um jede Position, die Kästen müssen
@@ -210,7 +204,7 @@ die Polynomordnung erhöhen oder das Netz verfeinern. Die Position wird in Schri
 
 **Gemessen (hpfem 0.5.0, 20.11.2026, p = 3):**
 
-* *Planar gegen Gitterzelle.* Flache Zelle (Luft/Glas, Periode 400 nm, Dipol 400 nm über dem Glas, σ = 10 nm, isotrop, λ = 600 nm, p = 3, 358 Dreiecke). Planar: F = 0,9855, nach oben 0,5522,
+* *Planare Bibliotheksrechnung gegen Gitterzelle* (`dataports.planar_emitter_response`, Sommerfeld/Fresnel; früher ein eigener Modus der App). Flache Zelle (Luft/Glas, Periode 400 nm, Dipol 400 nm über dem Glas, σ = 10 nm, isotrop, λ = 600 nm, p = 3, 358 Dreiecke). Planar (Referenz): F = 0,9855, nach oben 0,5522,
   nach unten 0,4478, NA 0,5: 0,0700 der Gesamtleistung. **Stufe C** der Zelle (θ = 0° bis 30° in 5°-Schritten, φ = 0°): das Muster dP/dΩ stimmt mit dem planaren Fernfeld auf vier Stellen
   überein (Gewinn 1,2217 bei 0°, 0,8684 bei 30°), die Leistung in der Apertur NA 0,5 ist 0,0687 von P_bulk gegen 0,0690 (planar, auf den freien Dipol bezogen): 0,4 %. Das Raster der Stufe C
   muss über den Rand der Apertur hinausreichen (der Rand von NA 0,5 in Luft liegt bei 29,9993°); der Rand wird interpoliert. Dauer: 148 s für 14 ebene Wellen.
@@ -219,6 +213,29 @@ die Polynomordnung erhöhen oder das Netz verfeinern. Die Position wird in Schri
   Stützstellen erhöhen und die Kanäle gegen die Summe prüfen.
 * *Rotationskörper.* Glaskugel (r = 300 nm) in Luft, axialer Dipol 150 nm über dem Pol, σ = 8 nm: der Weg über die Achse (Larmor-Normierung) gibt F_P = 1,067 (700 nm) und 1,119 (800 nm),
   der Weg der Bibliothek bei ρ = 0 F_z = 1,0687 und 1,1195: Abweichung 0,2 % und 0,04 %. Auf der Achse gilt F_ρ = F_φ und A_xz = 0; bei ρ = 200 nm liegt F_z (700 nm) bei 1,007.
+
+## Wellenleiter und Ports (Seitenleiste „Art des Modells“ → „Wellenleiter und Ports“)
+
+Ein zweidimensionales Bauteil in der Ebene (x, y), vier Reiter wie bei den anderen Modi. Reiter 1: Materialien (isotrop), Hintergrund (Mantel), Gebiet (Länge L in x, Breite B in y) und
+**Formen** (Streifen, Rechteck, Scheibe, Ring, Polygon; spätere Formen überdecken frühere, Pfeile ändern die Reihenfolge). Reiter 2: Wellenlänge oder Durchlauf, Netz (Zellen je Wellenlänge,
+Faktor an Grenzflächen), Ordnung, Anregungskanal und Feldkarten; das Netz erzeugt die App mit Gmsh, die Rechnung läuft im Worker (`fem_wg_worker.py`).
+
+**Aufgabe Ports** (`WaveguidePort`, `s_parameters`). Effektivindex-Modell: die Chipebene mit Polarisation H_z, das Feld (E_x, E_y) liegt in der Ebene. Die Ports sitzen auf den Rändern x = 0 (links)
+und x = L (rechts); die Wände y = ±B/2 sind ideale Leiter und müssen mehrere Abklinglängen von den Wellenleitern entfernt sein (die Prüfung warnt unter 300 nm). Die Portmoden sind die geführten
+Moden des Querschnitts der Portlinie (1D-p-FEM); je Port wählt man, wie viele Moden entwickelt werden (geführte zuerst). Ergebnis (Reiter 3): **Spektrum** (Transmission, Reflexion und Verlust des
+Anregungskanals), **S-Matrix** (|S|² oder Phase, Spalte = Anregung, alle ausbreitungsfähigen Kanäle), **Portmoden** (n_eff über der Wellenlänge) und **Feld** (|E|, Re E_x, Re E_y der Anregung); CSV-Export.
+Ein verlustfreies Bauteil muss Σ|S|² = 1 liefern; weicht der Verlust davon ab, ist das Netz zu grob.
+
+**Aufgabe Moden** (`PropagatingMode`). Der Querschnitt (Breite in x, Höhe in y) liegt in einem PEC-Kasten; gesucht werden die geführten Moden eines geraden Wellenleiters (vektorielles Eigenproblem,
+keine Geistermoden): n_eff und β je Mode, Felder |E_t|, |E_z|, Re E_x, Re E_y. Verlustfreie Materialien.
+
+**Gemessen (hpfem 0.5.0, 20.11.2026, p = 3).** Gerader Streifen 450 nm, n = 2,4 in 1,44, λ = 1550 nm, Gebiet 3000 × 3000 nm (1250 Dreiecke, 2,5 s): T = 1,0000, R < 10⁻⁶, der Portmode hat
+n_eff = 1,98555 gegen 1,98555 aus der Dispersionsgleichung des Schichtwellenleiters (TM, Abweichung unter 2·10⁻⁴), S reziprok und unitär. Stufe 450 → 900 nm: R = 0,0036, T = 0,9964. Querschnitt
+450 × 220 nm, n = 3,48 in 1,44 (2148 Dreiecke, 29 s): n_eff = 2,356, 1,731, 1,447, 1,367 (der Grundmode liegt im üblichen Bereich von 2,3 bis 2,4 für einen Siliziumdraht in Quarz).
+
+**Grenzen.** Gerade Elemente an den Rändern der Formen (Merkmale unter etwa einem Drittel der Zellgröße werden nicht aufgelöst, Gitterzähne und kleine Spalte brauchen „Faktor an Grenzflächen“ ≈ 0,5),
+isotrope Materialien, nur Ports links und rechts (keine Ports an den oberen und unteren Wänden), keine dreidimensionalen Ports (`PortModes3D`). Resonante Bauteile (Ringe, Koppler) sind
+nicht vorbereitet; sie brauchen feine Netze (Spalt und Steg aufgelöst) und viele Wellenlängen. Eine Vorlage dafür ist nicht mitgeliefert, weil ich eine Resonanz hier nicht nachgerechnet habe.
 
 ## Studien: Optimierung, Rekonstruktion, UQ (Seitenleiste „Art des Modells“ → „Studie“)
 Eine Studie rechnet eine Gitterzelle für viele Parameterwerte mit dem Job-Runner der Bibliothek (`python -m hpfem.run`). Die Zelle wird im
