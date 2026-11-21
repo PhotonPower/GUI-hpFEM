@@ -160,6 +160,11 @@ try:
     feats["sample"] = hasattr(getattr(hpfem, "ConicalScattering", None), "sample")
     feats["h_field"] = hasattr(getattr(hpfem, "ConicalScattering", None), "h_field")
     feats["absorbed_power"] = hasattr(hpfem, "absorbed_power_by_tag")
+    try:
+        import hpfem.pv as _pv
+        feats["pv"] = hasattr(_pv, "depth_profile")
+    except Exception:
+        feats["pv"] = False
     feats["progress"] = hasattr(hpfem, "ProgressEvent")
     feats["memory"] = hasattr(hpfem, "estimate_memory")
     try:
@@ -217,6 +222,30 @@ def older_source_build(py, source_version, flags=0, timeout=120):
             if version_tuple(inst) > version_tuple(source_version):
                 return dict(source=str(source_version), installed=inst)
     return None
+
+
+def fit_material(py, repo, spec, lam_lo_nm, lam_hi_nm, oscillators=1, count=60, timeout=180):
+    """Drude-Lorentz-Fit (fem_disp.fit im Python mit hpfem) an ein Bibliotheks-, Tabellen- oder Drude-Material. Gibt das Ergebnis-Dict
+    (spec, max_rel_error, Kurven) zurück; ``ValueError`` mit der Meldung des Fits bei einem Fehler."""
+    import tempfile
+
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    with tempfile.TemporaryDirectory() as tmp:
+        job = Path(tmp) / "fit.json"
+        job.write_text(json.dumps(dict(spec=spec, lam_lo_nm=float(lam_lo_nm), lam_hi_nm=float(lam_hi_nm), oscillators=int(oscillators), count=int(count))),
+                       encoding="utf-8")
+        try:
+            p = subprocess.run([str(py), str(HERE / "fem_disp.py"), "fit", str(job)], cwd=_cwd(repo, HERE), env=worker_env(repo), capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=timeout, creationflags=flags)
+        except Exception as exc:
+            raise ValueError(f"{type(exc).__name__}: {exc}") from exc
+    for line in (p.stdout or "").splitlines():
+        if line.startswith("FIT"):
+            out = json.loads(line[3:])
+            if out.get("error"):
+                raise ValueError(out["error"])
+            return out
+    raise ValueError(((p.stderr or "") + (p.stdout or "")).strip()[-600:] or f"Code {p.returncode}")
 
 
 def read_log(folder, tail=None):

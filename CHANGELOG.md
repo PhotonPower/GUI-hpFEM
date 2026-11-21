@@ -2,6 +2,17 @@
 
 ## Unveröffentlicht
 
+* Neu: **Drude-Lorentz-Materialien** und **selbstkonsistente Resonanzen**. Neuer Materialtyp „Drude-Lorentz (Fit)“ (ε∞, ħωp, ħγ und Lorentz-Oszillatoren in eV,
+  `hpfem.materials.DrudeLorentz`), in allen Modi. Im Materialeditor passt „An Messdaten anpassen“ ein Drude-Lorentz-Modell an Bibliotheks-, Tabellen- und
+  Drude-Materialien über einen Wellenlängenbereich an (`hpfem.materials.fit_drude_lorentz`, Vergleich Re/Im ε, größter relativer Fehler; als neues Material
+  oder als Ersatz). Aufgabe „Resonanzen“: Haken „Dispersion selbstkonsistent“ reicht die dispersiven Modelle an `hpfem.grating.resonances` und führt jede Mode
+  mit `grating.refine_resonance` nach (ε bei der eigenen komplexen Frequenz); die Tabelle zeigt zusätzlich λ und Q der eingefrorenen Rechnung. Neues Modul
+  `fem_disp.py` (läuft im hpfem-Python). Verkippte optische Achsen gab es im periodischen Modus schon (einachsig θ, φ; zweiachsig Euler-Winkel; voller Tensor).
+* Neu: **Photovoltaik** im periodischen Modus (hpfem.pv; Reiter 3 Expander „Photovoltaik“, Reiter 4 Unterreiter „Photovoltaik“): je Streupunkt die Generationsrate
+  im gewählten Absorber (absorbierte Leistung je Zelle / (ħω · Fläche), reine Nachbereitung ohne zusätzlichen Lösungsschritt) und ihr seitlich gemitteltes
+  Tiefenprofil G(y) (`hpfem.pv.depth_profile`, ohne PML). Bei einem Wellenlängendurchlauf gewichtet die App die Punkte mit einem Spektrum (Schwarzkörper 5778 K als
+  dokumentierte Näherung oder eigenes CSV, kein Normspektrum eingebaut) und zeigt J_sc (Sammelwirkungsgrad 1, obere Grenze), Absorption im Absorber, spektral
+  gewichtetes G(y) und CSV. Neue Module `fem_pv.py` (rein), `fem_pv_app.py` (Oberfläche), `pv_profile` im Worker.
 * Neu: Warnung in der Seitenleiste, wenn der Quell-Build im hp-FEM-Ordner älter ist als das im gewählten Python installierte hpfem (der Quell-Build
   kommt in den `PYTHONPATH` und verdeckt die neuere Version). `fem_run.older_source_build`, Eintrag `older_source` in der Bibliotheksprüfung.
 * Neu: **Emitter in der Gitterzelle** (hp-FEM 0.5, M17; Reiter 1 „Emitter in der Zelle“, Aufgabe „Emitter“ im Reiter 3): ein Gauß-Dipol in der periodischen

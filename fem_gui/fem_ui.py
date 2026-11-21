@@ -8,7 +8,7 @@ import streamlit as st
 
 import fem_materials as fm
 
-TYPE_LABELS = {"library": "Bibliothek (hpfem)", "index": "n + ik (konstant)", "eps": "ε (konstant)", "drude": "Drude-Metall", "table": "Tabelle λ, n, k",
+TYPE_LABELS = {"library": "Bibliothek (hpfem)", "index": "n + ik (konstant)", "eps": "ε (konstant)", "drude": "Drude-Metall", "drude_lorentz": "Drude-Lorentz (Fit)", "table": "Tabelle λ, n, k",
                "crystal": "Kristall (anisotrop)"}
 CRYSTAL_LABELS = {"uniaxial": "einachsig (n_o, n_e, Achse)", "biaxial": "zweiachsig (nx, ny, nz, Euler-Winkel)", "tensor": "voller Tensor ε_ij"}
 CRYSTAL_DEFAULT = {"uniaxial": {"type": "crystal", "kind": "uniaxial", "n_o": 1.658, "k_o": 0.0, "n_e": 1.486, "k_e": 0.0, "theta_deg": 45.0, "phi_deg": 0.0},
@@ -18,6 +18,7 @@ CRYSTAL_DEFAULT = {"uniaxial": {"type": "crystal", "kind": "uniaxial", "n_o": 1.
 LIB_CHOICES = list(fm.LIBRARY)
 DEFAULT_SPEC = {"library": {"type": "library", "name": "SiO2"}, "index": {"type": "index", "n": 1.5, "k": 0.0},
                 "eps": {"type": "eps", "re": 2.25, "im": 0.0}, "drude": {"type": "drude", "eps_inf": 1.0, "omega_p_eV": 9.0, "gamma_eV": 0.07},
+                "drude_lorentz": {"type": "drude_lorentz", "eps_inf": 1.0, "omega_p_eV": 9.0, "gamma_eV": 0.07, "osc": [[0.5, 3.0, 0.5]]},
                 "table": {"type": "table", "rows": [[400.0, 1.5, 0.0], [800.0, 1.5, 0.0]]}, "crystal": CRYSTAL_DEFAULT["uniaxial"]}
 
 
@@ -102,11 +103,80 @@ def crystal_editor(spec, key, changed, axi=False):
         st.error(str(exc))
 
 
-def material_editor(model, ver, lam0, used, rename, changed, prefix="", crystals=False, axi=False):
+def drude_lorentz_editor(spec, key, lam0, fit=None):
+    """Parameters of a drude_lorentz spec (ε∞, ħωp, ħγ, oscillators f / ħω_j / ħγ_j in eV) and, if ``fit`` is given, the fit of the model to
+    library / table data (see fit_editor)."""
+    c1, c2, c3 = st.columns(3)
+    spec["eps_inf"] = float(c1.number_input("ε∞", value=float(spec["eps_inf"]), step=0.1, format="%.5g", key=f"{key}_e"))
+    spec["omega_p_eV"] = float(c2.number_input("ħωp (eV)", value=float(spec["omega_p_eV"]), min_value=0.0, step=0.1, format="%.5g", key=f"{key}_p",
+                                                help="Plasmafrequenz des Drude-Terms; 0 schaltet den Drude-Term und die Oszillatorstärken ab."))
+    spec["gamma_eV"] = float(c3.number_input("ħγ (eV)", value=float(spec["gamma_eV"]), min_value=0.0, step=0.01, format="%.5g", key=f"{key}_g"))
+    txt = st.text_area("Lorentz-Oszillatoren: Stärke f, ħω_j (eV), ħγ_j (eV) je Zeile", value="\n".join(f"{a:g}, {b:g}, {c:g}" for a, b, c in spec.get("osc", [])),
+                       key=f"{key}_o", height=90, help="ε = ε∞ − ωp²/(ω² + iγω) + Σ f_j ωp²/(ω_j² − ω² − iγ_j ω), Konvention exp(−iωt). "
+                       "Leer lassen für ein reines Drude-Metall.")
+    try:
+        rows = [[float(v) for v in line.replace(";", ",").split(",")] for line in txt.splitlines() if line.strip()]
+        if all(len(r) == 3 and r[0] >= 0 and r[1] > 0 and r[2] >= 0 for r in rows):
+            spec["osc"] = rows
+        else:
+            st.error("Je Zeile drei Zahlen (f ≥ 0, ħω_j > 0, ħγ_j ≥ 0).")
+    except ValueError:
+        st.error("Zahlen nicht lesbar.")
+
+
+def fit_editor(model, name, spec, key, lam0, fit, changed):
+    """Expander: Drude-Lorentz-Fit of a library / table / Drude material over a wavelength range; the result can replace the material (the fit is
+    analytic in ω, so resonances can be made self-consistent) or be added as a new material."""
+    with st.expander("An Messdaten anpassen (Drude-Lorentz)"):
+        c1, c2, c3 = st.columns(3)
+        lo = float(c1.number_input("λ von (nm)", 100.0, 20000.0, float(max(200.0, round(lam0 * 0.7))), 10.0, key=f"{key}_lo"))
+        hi = float(c2.number_input("λ bis (nm)", 100.0, 20000.0, float(round(lam0 * 1.4)), 10.0, key=f"{key}_hi"))
+        n_osc = int(c3.number_input("Oszillatoren", 0, 6, 2, key=f"{key}_n", help="Mehr Oszillatoren passen enger an, können aber überanpassen."))
+        if lo >= hi:
+            st.error("λ von muss kleiner als λ bis sein.")
+            return
+        if st.button("Anpassen", key=f"{key}_go"):
+            with st.spinner("Anpassung läuft …"):
+                try:
+                    st.session_state[f"{key}_res"] = fit(spec, lo, hi, n_osc)
+                except Exception as exc:
+                    st.session_state.pop(f"{key}_res", None)
+                    st.error(f"Anpassung nicht möglich: {exc}")
+        r = st.session_state.get(f"{key}_res")
+        if r:
+            import matplotlib.pyplot as plt
+
+            fig, ax = plt.subplots(figsize=(6.2, 3.2))
+            ax.plot(r["lam_nm"], r["eps_ref_re"], "C0.", label="Re ε Daten")
+            ax.plot(r["lam_nm"], r["eps_fit_re"], "C0-", label="Re ε Fit")
+            ax.plot(r["lam_nm"], r["eps_ref_im"], "C3.", label="Im ε Daten")
+            ax.plot(r["lam_nm"], r["eps_fit_im"], "C3-", label="Im ε Fit")
+            ax.set_xlabel("Wellenlänge (nm)")
+            ax.set_ylabel("ε")
+            ax.legend(fontsize=8)
+            ax.grid(alpha=0.3)
+            st.pyplot(fig)
+            plt.close(fig)
+            st.caption(f"Größter relativer Fehler von ε auf den Stützstellen: {100 * r['max_rel_error']:.2f} %. {fm.describe(r['spec'])}")
+            b1, b2 = st.columns(2)
+            if b1.button("Als neues Material hinzufügen", key=f"{key}_add"):
+                model["materials"][unique_name(model, f"{name} (Fit)")] = copy.deepcopy(r["spec"])
+                st.session_state.pop(f"{key}_res", None)
+                changed()
+                st.rerun()
+            if b2.button("Dieses Material ersetzen", key=f"{key}_rep"):
+                model["materials"][name] = copy.deepcopy(r["spec"])
+                st.session_state.pop(f"{key}_res", None)
+                changed()
+                st.rerun()
+
+
+def material_editor(model, ver, lam0, used, rename, changed, prefix="", crystals=False, axi=False, fit=None):
     """Editor of model["materials"]: one expander per material (name, type, parameters, n and k at lam0, rename, delete) and the buttons to
     add a library or an own material. rename(model, old, new) renames everywhere; changed() is called before every st.rerun (bumps the widget
     version). crystals: offer the anisotropic type (the periodic mode with hpfem.grating and the bodies of revolution take it; axi: the tensor is read in
-    (r, φ, z) and must be diagonal there), with templates (constant principal indices at λ0)."""
+    (r, φ, z) and must be diagonal there), with templates (constant principal indices at λ0). fit(spec, lo, hi, n_osc): Drude-Lorentz fit (fem_run.fit_material),
+    offered for library / table / Drude materials."""
     types = [t for t in TYPE_LABELS if crystals or t != "crystal"]
     for name in list(model["materials"]):
         spec = model["materials"][name]
@@ -143,6 +213,8 @@ def material_editor(model, ver, lam0, used, rename, changed, prefix="", crystals
                                                             key=f"{prefix}md_p_{ver}_{name}"))
                 spec["gamma_eV"] = float(c3.number_input("ħγ (eV)", value=float(spec["gamma_eV"]), min_value=0.0, step=0.01, format="%.5g",
                                                           key=f"{prefix}md_g_{ver}_{name}"))
+            elif typ == "drude_lorentz":
+                drude_lorentz_editor(spec, f"{prefix}mdl_{ver}_{name}", lam0)
             elif typ == "crystal":
                 crystal_editor(spec, f"{prefix}mc_{ver}_{name}", changed, axi=axi)
             else:
@@ -162,6 +234,8 @@ def material_editor(model, ver, lam0, used, rename, changed, prefix="", crystals
                     st.caption(f"bei {lam0:g} nm: n = {n_:.4f}, k = {k_:.4f}, ε = {fm.eps_at(spec, lam0).real:.4f} {fm.eps_at(spec, lam0).imag:+.4f} i")
                 except Exception as exc:
                     st.caption(f"bei {lam0:g} nm: {exc}")
+            if fit is not None and (typ in ("table", "drude", "drude_lorentz") or (typ == "library" and spec["name"] not in ("air", "vacuum"))):
+                fit_editor(model, name, spec, f"{prefix}mfit_{ver}_{name}", lam0, fit, changed)
             b1, b2 = st.columns(2)
             if newname != name and newname.strip():
                 if newname in model["materials"]:

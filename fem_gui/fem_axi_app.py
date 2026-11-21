@@ -159,7 +159,7 @@ def render(ctx):
                "(Purcell-Faktor, Abstrahlung, Modenzerlegung) und Streuung ebener Wellen (Querschnitte, Streudiagramm, Nahfeld).")
     t1, t2, t3, t4, t5 = st.tabs(["1 Modell", "2 Netz", "3 Rechnung", "4 Ergebnisse", "5 Info"])
     with t1:
-        tab_model(model, ver)
+        tab_model(model, ver, ctx)
     with t2:
         tab_mesh(model, work)
     with t3:
@@ -170,13 +170,14 @@ def render(ctx):
         tab_info()
 
 
-def tab_model(model, ver):
+def tab_model(model, ver, ctx):
     left, right = st.columns([5, 4])
     em, rs, dom = model["emitter"], model["resonance"], model["domain"]
     with left:
         model["name"] = st.text_input("Name des Modells", value=model["name"], key=f"ax_name_{ver}")
         st.subheader("Materialien")
-        ui.material_editor(model, ver, float(rs["wavelength_nm"]), used(model), rename, bump, prefix="ax_", crystals=True, axi=True)
+        ui.material_editor(model, ver, float(rs["wavelength_nm"]), used(model), rename, bump, prefix="ax_", crystals=True, axi=True,
+                           fit=None if ctx["lib"].get("error") else (lambda sp, lo, hi, n: fr.fit_material(ctx["py"], ctx["repo"], sp, lo, hi, n)))
         names = list(model["materials"])
         st.subheader("Umgebung und Substrat")
         c = st.columns(2)

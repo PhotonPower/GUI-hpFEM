@@ -28,6 +28,7 @@ import fem_ui as ui  # noqa: E402
 import fem_axi_app  # noqa: E402
 import fem_emit as fe  # noqa: E402
 import fem_emit_app  # noqa: E402
+import fem_pv_app  # noqa: E402
 import fem_study_app  # noqa: E402
 import fem_wg_app  # noqa: E402
 
@@ -52,7 +53,7 @@ _worker = HERE / "fem_worker.py"
 if _worker.is_file():
     _wtext = _worker.read_text(encoding="utf-8", errors="replace")
     for _f in ("fem_axi.py", "fem_axi_worker.py", "fem_axi_app.py", "fem_ui.py", "fem_study.py", "fem_study_app.py", "fem_emit.py", "fem_emit_app.py",
-               "fem_emit_worker.py", "fem_wg.py", "fem_wg_app.py", "fem_wg_worker.py"):
+               "fem_emit_worker.py", "fem_wg.py", "fem_wg_app.py", "fem_wg_worker.py", "fem_disp.py"):
         if not (HERE / _f).is_file():
             _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
     _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml", "GratingRun", "adaptive_grating_point",
@@ -531,7 +532,8 @@ with t_model:
             S.ver += 1
 
         ui.material_editor(model, ver, inc["wavelength_nm"], used_materials(model), rename_material, _bump,
-                           crystals=bool(FEATS.get("crystals")) or any(fm.is_crystal(v) for v in model["materials"].values()))
+                           crystals=bool(FEATS.get("crystals")) or any(fm.is_crystal(v) for v in model["materials"].values()),
+                           fit=None if lib.get("error") else (lambda sp, lo, hi, n: fr.fit_material(py, repo, sp, lo, hi, n)))
         if not FEATS.get("crystals"):
             st.caption("Kristalle (anisotrope Materialien) brauchen hp-FEM mit M19 (AnisotropicStack).")
         names = list(model["materials"])
@@ -895,6 +897,11 @@ with t_run:
                                   help="hpfem.grating.jones (M19): löst je Punkt für s und p und liefert für jede ausbreitungsfähige Ordnung die "
                                        "leistungsnormierte Jones-Matrix (Spalten: einfallend s, p; Zeilen: ausfallend s, p bzw. die beiden Moden eines "
                                        "Kristallsubstrats) und die Mueller-Matrix (Stokes I, Q, U, V). Doppelte Rechenzeit.")
+    if S.task == "scattering" and not fg.isolated(S.model):
+        fem_pv_app.run_panel(sv, S.model, used_materials(S.model), float(np.mean(fr.wavelength_range(S.model))),
+                             available=bool(FEATS.get("absorbed_power") and FEATS.get("pv")) or bool(lib.get("error")))
+    else:
+        sv["pv"] = None
     crystal_names = [n for n, v in S.model["materials"].items() if fm.is_crystal(v)]
     if crystal_names and not (sv["engine"] == "grating" and S.task == "scattering"):
         st.error(f"Kristalle ({', '.join(crystal_names)}) rechnet nur der Löser „hpfem.grating“ (Streuung); bitte diesen Löser wählen.")
@@ -906,6 +913,13 @@ with t_run:
         rs_["num_modes"] = int(c[0].number_input("Anzahl Moden", 1, 30, int(rs_["num_modes"]), key="rs_n",
                                                  help="Die Moden mit der komplexen Frequenz am nächsten an der Zielfrequenz (Wellenlänge der Beleuchtung)."))
         rs_["krylov_dimension"] = int(c[1].number_input("Krylov-Dimension (0 = automatisch)", 0, 400, int(rs_["krylov_dimension"]), 10, key="rs_k"))
+        disp_names = [n for n, v in S.model["materials"].items() if fm.is_dispersive(v) and not fm.is_crystal(v)]
+        rs_["selfconsistent"] = bool(st.checkbox("Dispersion selbstkonsistent (hpfem.grating.refine_resonance)", value=bool(rs_.get("selfconsistent", False)),
+                                                  key="rs_sc", disabled=not disp_names,
+                                                  help="Ohne Haken wertet hpfem ε bei der Zielwellenlänge aus und friert es ein. Mit Haken wird jede Mode nachgeführt: ε(ω) wird bei der "
+                                                       "eigenen komplexen Frequenz der Mode ausgewertet (Newton-Verfahren, Drude-Lorentz und Konstanten analytisch, Tabellen mit Re ω). "
+                                                       "Das verschiebt λ_res und Q merklich bei Metallen und Materialien nahe einer Absorptionskante. Für die analytische Fortsetzung "
+                                                       "am besten ein Drude-Lorentz-Material (Anpassung im Materialeditor)." + ("" if disp_names else " Kein dispersives Material im Modell.")))
         c[2].caption(f"Ziel: λ = {inc['wavelength_nm']:g} nm, Bloch-Wellenzahl aus θ = {inc['theta']:g}°, φ = {inc['phi']:g}°. "
                      "Ein Durchlauf über θ oder φ ergibt die Bänder; ein Durchlauf über λ verschiebt das Ziel.")
     with st.expander("Weitere Einstellungen"):
@@ -1148,7 +1162,7 @@ with t_res:
             st.caption(f"Ordner mit allen Dateien: {view}")
     elif res is not None:
         sub = st.tabs(["Spektrum / Ordnungen", "Feldkarten", "Schnitte", "Absorption", "Prüfung, Bilanz, Zeit", "Ableitungen", "Konvergenz in p",
-                       "hp-Adaptivität", "Tabelle und Export", "Jones / Mueller"])
+                       "hp-Adaptivität", "Tabelle und Export", "Jones / Mueller", "Photovoltaik"])
         with sub[0]:
             if len(df) and "R" in df:
                 show_fig(fp.fig_spectrum(df, mode), "spektrum.png", "dl_spec")
@@ -1242,6 +1256,8 @@ with t_res:
                 table_show(tdf)
         with sub[9]:
             jones_view(res, mode)
+        with sub[10]:
+            fem_pv_app.result_view(res)
         with sub[5]:
             jac_pts = [p for p in res["points"] if p.get("jacobian")]
             if not jac_pts:

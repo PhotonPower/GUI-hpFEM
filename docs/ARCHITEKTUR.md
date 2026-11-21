@@ -33,6 +33,9 @@
 | `fem_wg.py` | Wellenleiter und Ports ohne hpfem und ohne Streamlit: Modell (Vorlagen, Formen mit Priorität, Prüfung), Gmsh-Netz (`build_mesh`: Material je Fläche per Stichprobe im Inneren, Linien 101 links, 102 rechts, 103 unten, 104 oben), Job, Tabellen und Abbildungen (Spektrum, n_eff, S-Matrix, Feld, Modenfelder, Vorschau). |
 | `fem_wg_app.py` | Seite des Modus „Wellenleiter und Ports“ (`render_waveguide`, vier Reiter, eigener Prozess `wg_proc`, Ordner `<Arbeitsordner>/waveguide`). |
 | `fem_wg_worker.py` | Läuft im hpfem-Python: Aufgabe `ports` (`Scattering2D` mit `WaveguidePort`, `s_parameters`, Feld über `subdivide` + `sample_hcurl`) und Aufgabe `modes` (`PropagatingMode`, Felder über `subdivide` + `sample_hcurl`/`sample_h1`). |
+| `fem_disp.py` | Läuft im hpfem-Python (vom Worker importiert, als Skript für den Fit): `dispersive_model` (Material-Dict → `hpfem.materials`-Modell) und `fit` (`fit_drude_lorentz`, Ergebnis als `drude_lorentz`-Spec in eV). `fem_run.fit_material` startet den Fit als Unterprozess. |
+| `fem_pv.py` | Photovoltaik ohne hpfem und ohne Streamlit: Schwarzkörper- und CSV-Spektren, Bandgewichte (Bandbreiten aus Mittelpunkten wie `hpfem.pv.spectral_weights`), `jsc`, spektral gewichtetes G(y), Tabellen und Abbildungen. |
+| `fem_pv_app.py` | Expander „Photovoltaik“ im Reiter Rechnung (`run_panel`, schreibt `solver["pv"]`) und Unterreiter „Photovoltaik“ der Ergebnisse (`result_view`). |
 | `fem_emit_worker.py` | Aufgabe `emitter` des Workers `fem_worker.py` (dort in `main` eingehängt): Kostenschätzung (`grating.emission_cost`), Stufe A (`grating.emit`), B (`grating.dipole_emission` + `emission_cone`), C (`grating.emission_pattern`); nutzt `Case`, `prepare` und `grating_options` des Workers (ohne `cover_line`/`substrate_line`, die wählt die Bibliothek). |
 | `fem_post.py` | Ergebnistabelle, abgeleitete Felder (|E|, Q, |H|, S), Ableitungen, Resonanzen, Bilanz, Zeit, alle Abbildungen. |
 
