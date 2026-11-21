@@ -47,14 +47,14 @@ _REQUIRED = {
                          "available_quantities", "jacobian_dataframe", "fig_jacobian", "resonances_dataframe", "fig_resonances", "timing_dataframe",
                          "balance_dataframe", "jones_orders", "jones_dataframe", "mueller_dataframe", "fig_mueller"]),
     "fem_run.py": (fr, ["sweep_values", "wavelength_range", "make_job", "write_job", "start_worker", "read_log", "progress_info", "log_flags", "library_warnings",
-                        "default_python", "probe_library", "run_check", "request_cancel", "estimate_line", "diagnostics_lines", "start_study"]),
+                        "default_python", "probe_library", "run_check", "request_cancel", "estimate_line", "diagnostics_lines", "start_study", "study_needs_worker"]),
 }
 _old = [f"{name}: fehlt {', '.join(miss)}" for name, (mod, names) in _REQUIRED.items() if (miss := [n for n in names if not hasattr(mod, n)])]
 _worker = HERE / "fem_worker.py"
 if _worker.is_file():
     _wtext = _worker.read_text(encoding="utf-8", errors="replace")
     for _f in ("fem_axi.py", "fem_axi_worker.py", "fem_axi_app.py", "fem_ui.py", "fem_study.py", "fem_study_app.py", "fem_emit.py", "fem_emit_app.py",
-               "fem_emit_worker.py", "fem_wg.py", "fem_wg_app.py", "fem_wg_worker.py", "fem_disp.py", "fem_bands.py", "fem_bands_app.py", "fem_bands_worker.py"):
+               "fem_emit_worker.py", "fem_wg.py", "fem_wg_app.py", "fem_wg_worker.py", "fem_disp.py", "fem_bands.py", "fem_bands_app.py", "fem_bands_worker.py", "fem_study_worker.py"):
         if not (HERE / _f).is_file():
             _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
     _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml", "GratingRun", "adaptive_grating_point",

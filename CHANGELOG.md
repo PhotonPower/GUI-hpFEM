@@ -2,6 +2,15 @@
 
 ## Unveröffentlicht
 
+* Neu: **Erweiterte Studien** (Modus „Studie“, Aufgabe Optimierung): Nebenbedingungen an Messgrößen (`optimize.constraints`, `hpfem.opt.OutcomeConstraint`,
+  Verfahren bayesian) und an Parameter (`optimize.linear_constraints`, `hpfem.opt.LinearConstraint` auf dem Entwurfsraum, alle Verfahren), Mehrzieloptimierung
+  (Verfahren `pareto`, `hpfem.opt.pareto_optimize` mit `objectives`, `maximize`, `ref_point`) und Mehrstufen-Optimierung (`multi_fidelity`, Stufen
+  `fidelities`), beide mit BoTorch (`pip install "hpfem[opt-bo]"`; `FEATS["opt_bo"]`). Formular „Nebenbedingungen und Mehrziel“ in Reiter 1 (schreibt ins
+  JSON, mit Prüfung), neue Vorlage „Optimierung mit Nebenbedingungen“. Neuer Studien-Worker `fem_study_worker.py`: der Job-Runner `hpfem.run` selbst (gleiche
+  Ereignisse, `results.json` und Studienspeicher), nur mit ersetztem Optimierungsschritt (hpfem 0.5.x); nur Jobs mit den neuen Schlüsseln laufen darüber,
+  alle anderen wie bisher über `python -m hpfem.run`. Verlauf und Pareto-Reiter markieren Auswertungen, die eine Nebenbedingung verletzen; die Front einer
+  Mehrzieloptimierung steht mit Referenzpunkt als Tabelle, Diagramm und CSV im Ergebnis. Integer- und kategoriale Entwurfsvariablen gibt es nicht: der
+  Evaluator `GratingEvaluator` kennt nur Geometrie- und Materialparameter.
 * Neu: Modus **„Bandstruktur (photonischer Kristall)“** (Seitenleiste; hpfem 0.5, `BandStructure2D`, Floquet-Bloch): Bänder f = ω a / (2π c) eines 2D-Kristalls
   entlang Γ–X–M–Γ (quadratisch) bzw. Γ–M–K–Γ (hexagonal), Polarisation mit E in der Ebene (H_z; die Polarisation E_z deckt der Löser nicht ab). Zelle
   maßstabsfrei in Einheiten der Gitterkonstante, Formen (Scheibe, Rechteck, Ring, Polygon, Priorität nach Reihenfolge) werden im Gitter wiederholt (periodische
