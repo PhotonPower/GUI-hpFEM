@@ -5,6 +5,8 @@
 Reads <job>/job.json (model of fem_axi, task, solver settings) and <job>/mesh.msh (meridian mesh x = r, y = z of fem_axi.build_mesh) and
   task "resonance": the quasi-normal modes of azimuthal order m nearest the target wavelength (hpfem.AxisymmetricResonance, cylindrical
                     PML): omega, wavelength, Q, residual; the mode fields on the subdivided mesh (mode_<k>.npz)
+  task "cavity":    the lowest modes of the closed PEC cavity (hpfem.AxisymmetricCavity, gauged real eigenproblem, no PML) for every azimuthal order
+                    m of the list: wavenumber k0 -> lambda, c / lambda, the mode fields (mode_<m>_<k>.npz); permittivities at cavity.lam_ref_nm
   task "emitter":   a Gaussian-smeared point dipole on the axis (hpfem.axisymmetric_gaussian_dipole; transverse: orders m = +-1, axial: m = 0)
                     over a wavelength sweep (hpfem.AxisymmetricScattering with the current as source): Purcell factor F_P = P / P_bulk
                     (power through the closed surface around the emitter box over the Larmor power of the smeared dipole in the bulk medium
@@ -150,6 +152,30 @@ def export_field(job, meridian, azimuthal, subdivisions, normalise=True):
     scale = (np.nanmax(np.abs(field)) or 1.0) if normalise else 1.0
     return dict(points_nm=pts[used] / NM, simplices=remap[conn].astype(np.int32), E=(field / scale).astype(np.complex64), tag=tags.astype(np.int32),
                 scale=float(scale))
+
+
+# -------------------------------------------------------------------------------------------------------------- cavity
+def cavity_modes(job, m, num_modes, lam_ref_nm, krylov=0):
+    """The lowest ``num_modes`` modes of azimuthal order m of the closed cavity (materials at lam_ref_nm): list of dicts and the raw modes."""
+    h = job.h
+    mm, _ = job.materials(lam_ref_nm)
+    setup = h.AxisymmetricCavitySetup()
+    setup.materials = mm
+    setup.axis_tag = fa.TAG_AXIS
+    setup.pec_tags = [fa.TAG_WALL]
+    setup.azimuthal_order = int(m)
+    setup.num_modes = int(num_modes)
+    setup.krylov_dimension = int(krylov) if krylov else max(30, 4 * int(num_modes) + 20)
+    t0 = time.time()
+    problem = h.AxisymmetricCavity(job.nd, job.h1, setup)
+    raw = problem.solve()
+    dt = time.time() - t0
+    modes = []
+    for k, md in enumerate(raw):
+        k0 = float(md.wavenumber)
+        lam = 2 * np.pi / k0 / NM
+        modes.append(dict(k=k, m=int(m), wavenumber=k0, lam_nm=float(lam), f_THz=float(h.constants.c0 * k0 / (2 * np.pi) / 1e12)))
+    return modes, raw, dt, int(problem.num_free_dofs)
 
 
 # ------------------------------------------------------------------------------------------------------------ resonances
@@ -669,11 +695,15 @@ def main(argv=None) -> int:
     except Exception:
         vi = {"hpfem": str(getattr(hpfem, "__version__", "?"))}
     say(f"hpfem {vi.get('hpfem', '?')}" + (f", backends {', '.join(vi.get('backends', []))}" if vi.get("backends") else ""))
-    if not hasattr(hpfem, "AxisymmetricResonance"):
-        say("ERROR Dieses hpfem hat keinen zylindersymmetrischen Löser (AxisymmetricResonance, hp-FEM ab 0.3)")
+    need = "AxisymmetricCavity" if jd["task"] == "cavity" else "AxisymmetricResonance"
+    if not hasattr(hpfem, need):
+        say(f"ERROR Dieses hpfem hat keinen zylindersymmetrischen Löser ({need}, hp-FEM ab 0.3)")
         return 1
     job = Job(hpfem, jd, folder)
     model, task = job.model, jd["task"]
+    if task == "cavity":                                           # closed cavity: no PML, the field export keeps the whole mesh
+        cv = model["cavity"]
+        job.lay = dict(r_in=float(cv["radius_nm"]), r_out=float(cv["radius_nm"]), z_lo=0.0, z_hi=float(cv["height_nm"]))
     say(f"order p = {job.order}: {job.dofs} DoFs")
     out = dict(meta=dict(model=model.get("name", ""), task=task, order=job.order, cells=int(job.mesh.num_cells), dofs=job.dofs,
                          started=time.strftime("%Y-%m-%d %H:%M:%S"), version_info=vi), resonance=None, points=[])
@@ -684,7 +714,34 @@ def main(argv=None) -> int:
 
     sub = int(jd.get("subdivisions", 2))
     try:
-        if task == "resonance":
+        if task == "cavity":
+            cv = model["cavity"]
+            orders = fa.cavity_orders(model)
+            out["cavity"] = dict(lam_ref_nm=float(cv["lam_ref_nm"]), radius_nm=float(cv["radius_nm"]), height_nm=float(cv["height_nm"]), orders=orders)
+            for i, m in enumerate(orders):
+                if job.cancelled():
+                    say("CANCELLED")
+                    out["cancelled"] = True
+                    flush()
+                    return 0
+                say(f"PROGRESS {i + 1}/{len(orders)} cavity modes of order m = {m}")
+                try:
+                    modes, raw, dt, nfree = cavity_modes(job, m, int(cv["num_modes"]), float(cv["lam_ref_nm"]), int(jd.get("krylov_dimension", 0)))
+                    for md in modes:
+                        say(f"  mode {md['k']}: lambda = {md['lam_nm']:.3f} nm, f = {md['f_THz']:.4f} THz")
+                    out["points"].append(dict(index=i, m=m, modes=modes, time_s=dt, free_dofs=nfree))
+                    flush()
+                    if jd.get("fields", True):
+                        for md, r in zip(modes, raw):
+                            fld = export_field(job, r.meridian, r.azimuthal, sub)
+                            fld.update(lam_nm=md["lam_nm"], m=md["m"], kind="cavity")
+                            np.savez_compressed(folder / f"mode_{m}_{md['k']}.npz", **fld)
+                    say(f"  {dt:.1f} s")
+                except Exception as exc:
+                    say(f"ERROR order {m}: {exc}")
+                    out["points"].append(dict(index=i, m=m, error=str(exc)))
+                flush()
+        elif task == "resonance":
             rs = model["resonance"]
             say(f"PROGRESS 1/1 modes of order m = {rs['m']} near {rs['wavelength_nm']:g} nm")
             modes, raw, dt = resonances(job, float(rs["wavelength_nm"]), int(rs["m"]), int(rs["num_modes"]), int(jd.get("krylov_dimension", 0)))

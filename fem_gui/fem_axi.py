@@ -19,6 +19,8 @@ Model (JSON dict, lengths in nm):
     resonance = {wavelength_nm, m, num_modes}
     emitter = {z_nm, orientation ("transverse": dipole perpendicular to the axis, orders m = +-1; "axial": along the axis, m = 0),
                sigma_nm (Gaussian smearing), sweep = {mode "fixed" | "resonance", start, stop, n, linewidths}, modal (Riesz expansion)}
+    cavity = {radius_nm, height_nm (closed PEC cylinder 0 <= r <= R, 0 <= z <= H, filled with the background material, the parts are inserts),
+              orders (azimuthal orders m >= 0), num_modes (lowest modes per order), lam_ref_nm (wavelength for the permittivities and the mesh size)}
     scattering = {theta_deg (angle of incidence to the +z axis, the wave runs along (sin theta, 0, cos theta)), pol ("S": E along y,
                   "P": E in the x-z plane), sweep = {start, stop, n}, max_order (largest |m|), tol (stop when the pair +-m carries less)}
 
@@ -83,7 +85,12 @@ def default_model():
         "emitter": {"z_nm": 520.0, "orientation": "axial", "sigma_nm": 10.0,
                     "sweep": {"mode": "fixed", "start": 800.0, "stop": 1000.0, "n": 11, "linewidths": 1.5}, "modal": False},
         "scattering": default_scattering(800.0, 1200.0),
+        "cavity": default_cavity(),
     }
+
+
+def default_cavity():
+    return {"radius_nm": 1000.0, "height_nm": 1500.0, "orders": [0, 1, 2], "num_modes": 4, "lam_ref_nm": 1500.0}
 
 
 def default_scattering(start, stop, n=21):
@@ -106,6 +113,16 @@ def dbr_pillar(top_pairs, bottom_pairs, radius, lam, hi="GaAs", lo="AlAs", n_hi=
 
 def presets():
     P = {}
+    P["Zylinderhohlraum R = 1 µm, h = 1,5 µm (leer, PEC; Test gegen die analytischen Moden)"] = {
+        "kind": "axi", "name": "Zylinderhohlraum R = 1 µm, h = 1,5 µm", "task_hint": "cavity",
+        "materials": {"Luft": {"type": "library", "name": "air"}, "Glas": _idx(1.5)},
+        "background": "Luft", "substrate": None, "layers": [], "parts": [],
+        "domain": {"margin_nm": 600.0, "pml_nm": 1000.0},
+        "resonance": {"wavelength_nm": 2000.0, "m": 0, "num_modes": 4},
+        "emitter": {"z_nm": 750.0, "orientation": "axial", "sigma_nm": 20.0,
+                    "sweep": {"mode": "fixed", "start": 1800.0, "stop": 2600.0, "n": 9, "linewidths": 1.5}, "modal": False},
+        "cavity": {"radius_nm": 1000.0, "height_nm": 1500.0, "orders": [0, 1, 2], "num_modes": 4, "lam_ref_nm": 1500.0},
+    }
     lam = 940.0
     parts, centre, height = dbr_pillar(6, 10, 750.0, lam)
     P["Mikrosäule GaAs/AlAs mit Quantenpunkt (schnell: r = 0,75 µm, 6/10 Paare)"] = {
@@ -216,6 +233,8 @@ def complete(m):
         m.setdefault(k, copy.deepcopy(v))
     m["emitter"].setdefault("modal", False)
     m.setdefault("layers", [])
+    for k, v in default_cavity().items():
+        m["cavity"].setdefault(k, copy.deepcopy(v))
     return m
 
 
@@ -337,6 +356,9 @@ def source_box(model):
 def wavelength_range(model, task="resonance"):
     """(lam_min, lam_max) in nm over which the model is meshed and checked."""
     lam_r = float(model["resonance"]["wavelength_nm"])
+    if task == "cavity":
+        lam_c = float(model.get("cavity", default_cavity())["lam_ref_nm"])
+        return lam_c, lam_c
     if task == "resonance":
         return lam_r * 0.95, lam_r * 1.05
     if task == "scattering":
@@ -399,6 +421,8 @@ def crystal_problems(model, task="resonance"):
 
 def validate(model, task="resonance"):
     """[(level, text)] of the model."""
+    if task == "cavity":
+        return cavity_problems(model)
     out = []
     names = set(model["materials"])
     for key in ("background",):
@@ -1188,3 +1212,245 @@ def whispering_m(model, lam_nm):
     except Exception:
         return None
     return int(round(2 * math.pi * 0.85 * n * R / lam_nm))
+
+
+# ---------------------------------------------------------------------------------------------------------------------- cavity
+TAG_CAVITY_WALL = TAG_WALL
+
+
+def cavity_orders(model):
+    """Sorted azimuthal orders m >= 0 of the cavity task."""
+    return sorted({int(m) for m in model["cavity"]["orders"]})
+
+
+def cavity_problems(model):
+    """[(level, text)] for the task "cavity": a closed PEC cylinder filled with the background material, parts as inserts."""
+    out = []
+    cv = model["cavity"]
+    names = set(model["materials"])
+    R, H, lam = float(cv["radius_nm"]), float(cv["height_nm"]), float(cv["lam_ref_nm"])
+    if R <= 0 or H <= 0:
+        out.append(("error", "Radius und Höhe des Hohlraums müssen größer als 0 sein."))
+    if lam <= 0:
+        out.append(("error", "Die Bezugswellenlänge muss größer als 0 sein."))
+    orders = [int(m) for m in cv["orders"]]
+    if not orders or min(orders) < 0:
+        out.append(("error", "Azimutordnungen m ≥ 0 angeben (−m hat dieselben Moden), mindestens eine."))
+    if int(cv["num_modes"]) < 1:
+        out.append(("error", "Mindestens eine Mode je Ordnung."))
+    if model["background"] not in names:
+        out.append(("error", f"Füllmaterial „{model['background']}“ fehlt in der Materialliste."))
+    used = {model["background"]} | {p["material"] for p in model["parts"]}
+    for n_ in sorted(used & names):
+        spec = model["materials"][n_]
+        try:
+            if fm.is_crystal(spec):
+                fm.axi_diagonal(spec, lam)                         # ValueError for an optic axis tilted against the symmetry axis
+                lossy = float(np.abs(fm.tensor_at(spec, lam).imag).max()) > 1e-9
+            else:
+                lossy = abs(fm.eps_at(spec, lam).imag) > 1e-9
+            if lossy:
+                out.append(("error", f"{n_} ist bei {lam:g} nm verlustbehaftet: der Hohlraumlöser rechnet nur verlustfreie Materialien (reelle Eigenfrequenzen)."))
+        except Exception as exc:
+            out.append(("error", f"{n_} bei {lam:g} nm: {exc}"))
+    for i, p in enumerate(model["parts"]):
+        if p["material"] not in names:
+            out.append(("error", f"Teil {i + 1}: Material „{p['material']}“ fehlt."))
+            continue
+        q = part_polygon(p)
+        if q[:, 0].min() < -1e-9:
+            out.append(("error", f"Teil {i + 1}: negative Radien (r muss ≥ 0 sein)."))
+        r0, r1, z0, z1 = part_bbox(p)
+        if r1 > R + 1e-9 or z0 < -1e-9 or z1 > H + 1e-9:
+            out.append(("error", f"Teil {i + 1} reicht aus dem Hohlraum (0 ≤ r ≤ {R:g}, 0 ≤ z ≤ {H:g} nm) heraus."))
+    if model.get("substrate") or model.get("layers"):
+        out.append(("warning", "Substrat und Schichten gelten nur für die anderen Aufgaben; der Hohlraum ist ringsum von PEC umgeben und wird nur mit Füllmaterial und Teilen gefüllt."))
+    if any(fm.is_crystal(model["materials"][n_]) for n_ in used & names):
+        out.append(("warning", "Kristall im Hohlraum: der Tensor wird in (r, φ, z) gelesen (Achse längs z, radial oder azimutal); die analytischen TE/TM-Moden gelten dann nicht."))
+    if model["parts"]:
+        out.append(("warning", "Teile im Hohlraum: keine analytische Referenz (nur der leere Zylinder hat geschlossene Formeln)."))
+    return out
+
+
+def cavity_analytic(R_nm, H_nm, n, orders, count=8):
+    """Analytic modes of the empty cylinder filled with a medium of index n (PEC wall): list of dicts (family, m, n_radial, p, lam_nm), sorted by
+    wavelength, for the azimuthal orders (m >= 0). TM_mnp: k = sqrt((j_mn / R)^2 + (p pi / H)^2), p >= 0; TE_mnp: k = sqrt((j'_mn / R)^2 + (p pi / H)^2), p >= 1;
+    lam = 2 pi n / k (vacuum wavelength). Needs scipy."""
+    import scipy.special as sp
+
+    out = []
+    for m in sorted({int(v) for v in orders}):
+        zj = sp.jn_zeros(m, 4) if m > 0 else sp.jn_zeros(0, 4)
+        zjp = sp.jnp_zeros(m, 4)
+        for fam, zeros, p_lo in (("TM", zj, 0), ("TE", zjp, 1)):
+            for k_r, z in enumerate(zeros, start=1):
+                for p in range(p_lo, p_lo + 4):
+                    k = math.sqrt((z / R_nm) ** 2 + (p * math.pi / H_nm) ** 2)
+                    out.append(dict(family=fam, m=m, n=k_r, p=p, lam_nm=2 * math.pi * float(n) / k, k_per_nm=k / float(n)))
+    out.sort(key=lambda d: -d["lam_nm"])
+    return out[:max(int(count), 0)] if count else out
+
+
+def build_cavity_mesh(model, ms, out_dir):
+    """Meridian mesh of the closed cavity 0 <= r <= R, 0 <= z <= H (MSH 4.1): surfaces tag 1 + index of the material, the axis r = 0 tag 90, the PEC wall (r = R,
+    z = 0, z = H) tag 91; also mesh_plot.npz. ms: cells_per_wavelength, interface_factor, curved. The element size follows lam_ref_nm (the smallest wavelength
+    wanted). Returns statistics."""
+    import gmsh
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    errs = [t for lvl, t in cavity_problems(model) if lvl == "error"]
+    if errs:
+        raise ValueError("Modell fehlerhaft: " + " | ".join(errs))
+    cv = model["cavity"]
+    R, H, lam = float(cv["radius_nm"]), float(cv["height_nm"]), float(cv["lam_ref_nm"])
+    names = list(model["materials"])
+    curved = bool(ms.get("curved", True)) and any(p["type"] in ("sphere", "ellipsoid", "torus") for p in model["parts"])
+    try:
+        gmsh.initialize(interruptible=False)
+    except TypeError:
+        gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("Geometry.ToleranceBoolean", 1e-4)
+        gmsh.model.add("cavity")
+        occ = gmsh.model.occ
+        box = occ.addRectangle(0, 0, 0, R, H)
+        tools = []
+        for idx, p in enumerate(model["parts"]):
+            tag = _make_part(occ, p)
+            res, _ = occ.intersect([(2, tag)], [(2, box)], removeObject=True, removeTool=False)
+            tools += [(dt, idx) for dt in res if dt[0] == 2]
+        if tools:
+            out, outmap = occ.fragment([(2, box)], [dt for dt, _ in tools])
+        else:                                                      # no inserts: fragment returns nothing for an empty tool list
+            outmap = [[(2, box)]]
+        occ.synchronize()
+        sources = {}
+        for k, produced in enumerate(outmap):
+            for dim, tag in produced:
+                if dim == 2:
+                    sources.setdefault(tag, []).append(k)
+        surf_mat = {}
+        for tag, srcs in sources.items():
+            part_srcs = [tools[k - 1][1] for k in srcs if k >= 1]
+            surf_mat[tag] = model["parts"][max(part_srcs)]["material"] if part_srcs else model["background"]
+        e = 1e-6 * max(R, 1.0)
+        axis, wall = [], []
+        for dim, tag in gmsh.model.getEntities(1):
+            x0, y0, _, x1, y1, _ = gmsh.model.getBoundingBox(dim, tag)
+            if abs(x0) < e and abs(x1) < e:
+                axis.append(tag)
+            elif (abs(x0 - R) < e and abs(x1 - R) < e) or (abs(y0) < e and abs(y1) < e) or (abs(y0 - H) < e and abs(y1 - H) < e):
+                wall.append(tag)
+        gmsh.model.addPhysicalGroup(1, axis, TAG_AXIS, "axis")
+        gmsh.model.addPhysicalGroup(1, wall, TAG_WALL, "wall")
+        surf_tag = {tag: 1 + names.index(mat) for tag, mat in surf_mat.items()}
+        for t in sorted(set(surf_tag.values())):
+            gmsh.model.addPhysicalGroup(2, [s for s, v in surf_tag.items() if v == t], t, names[t - 1])
+        size_of = {n: fg._size_of(model["materials"][n], lam, lam, ms) for n in names}
+        point_size, point_mats = {}, {}
+        for tag, mat in surf_mat.items():
+            for dim, pnt in gmsh.model.getBoundary([(2, tag)], combined=False, oriented=False, recursive=True):
+                point_size[pnt] = min(point_size.get(pnt, 1e9), size_of[mat])
+                point_mats.setdefault(pnt, set()).add(mat)
+        for pnt in point_size:
+            if len(point_mats[pnt]) > 1:
+                point_size[pnt] *= ms["interface_factor"]
+        for pnt, hh in point_size.items():
+            gmsh.model.mesh.setSize([(0, pnt)], hh)
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 1)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", max(size_of.values()))
+        gmsh.model.mesh.generate(2)
+        if curved:
+            gmsh.model.mesh.setOrder(2)
+        gmsh.option.setNumber("Mesh.MshFileVersion", 4.1)
+        gmsh.option.setNumber("Mesh.Binary", 0)
+        gmsh.option.setNumber("Mesh.SaveAll", 0)
+        msh = out_dir / "mesh.msh"
+        gmsh.write(str(msh))
+        ntags, coords, _ = gmsh.model.mesh.getNodes()
+        coords = np.array(coords).reshape(-1, 3)
+        index = {int(t): i for i, t in enumerate(ntags)}
+        tris, mats = [], []
+        for tag, mat in surf_mat.items():
+            types, _, enodes = gmsh.model.mesh.getElements(2, tag)
+            for tp, nd in zip(types, enodes):
+                if tp not in (2, 9):
+                    continue
+                per = 3 if tp == 2 else 6
+                arr = np.array(nd, dtype=int).reshape(-1, per)[:, :3]
+                tris += [[index[int(v)] for v in row] for row in arr]
+                mats += [names.index(mat)] * len(arr)
+        tris, mats = np.array(tris), np.array(mats)
+        xy = coords[:, :2]
+        a_, b_, c_ = xy[tris[:, 0]], xy[tris[:, 1]], xy[tris[:, 2]]
+        lens = np.stack([np.linalg.norm(b_ - a_, axis=1), np.linalg.norm(c_ - b_, axis=1), np.linalg.norm(a_ - c_, axis=1)], axis=1)
+        np.savez(out_dir / "mesh_plot.npz", xy=xy, tri=tris, mat=mats, names=np.array(names), order=2 if curved else 1)
+        problems = fg.reader_check(msh)
+        if problems:
+            raise RuntimeError("Das Netz erfüllt die Anforderungen des hpfem-Lesers nicht: " + "; ".join(problems))
+        return dict(cells=int(len(tris)), nodes=int(len(ntags)), order=2 if curved else 1, edge_min_nm=float(lens.min()), edge_max_nm=float(lens.max()),
+                    cells_per_material={names[i]: int((mats == i).sum()) for i in sorted(set(mats))},
+                    sizes_nm={n: round(float(hh), 2) for n, hh in size_of.items()}, file=str(msh), task="cavity", source_box_nm=None)
+    finally:
+        gmsh.finalize()
+
+
+def cavity_preview_figure(model, figsize=(5.2, 6.0)):
+    """Cross-section of the cavity mirrored to -r: PEC wall (thick), filling and inserts."""
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon as Poly
+    from matplotlib.patches import Rectangle
+
+    cv = model["cavity"]
+    R, H = float(cv["radius_nm"]), float(cv["height_nm"])
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.add_patch(Rectangle((-R, 0), 2 * R, H, facecolor=fg.material_color(model, model["background"]), alpha=0.45, edgecolor="k", lw=2.0))
+    for p in model["parts"]:
+        q = part_polygon(p)
+        for sgn in (1, -1):
+            ax.add_patch(Poly(np.column_stack([sgn * q[:, 0], q[:, 1]]), closed=True, facecolor=fg.material_color(model, p["material"]), edgecolor="0.2", lw=0.5))
+    ax.axvline(0, color="k", lw=0.8, ls="-.")
+    handles = [Rectangle((0, 0), 1, 1, color=fg.material_color(model, n)) for n in model["materials"]]
+    ax.legend(handles, list(model["materials"]), fontsize=7, loc="upper right")
+    ax.set_xlim(-1.08 * R, 1.08 * R)
+    ax.set_ylim(-0.06 * H, 1.06 * H)
+    ax.set_aspect("equal")
+    ax.set_xlabel("r (nm)  (gespiegelt: Schnitt durch die Achse)")
+    ax.set_ylabel("z (nm)")
+    ax.set_title("Hohlraum: dicke Linie = PEC-Wand", fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def cavity_frame(res):
+    """Rows of the cavity modes (list of dicts with m, k, lam_nm, f_THz, ...) from the worker result; None if there is none."""
+    rows = []
+    for p in (res.get("points") or []):
+        for md in p.get("modes", []):
+            rows.append(md)
+    return rows
+
+
+def fig_cavity_modes(modes, analytic=None, figsize=(7.5, 4.2)):
+    """Resonance frequency c / lambda (THz) of the modes over the azimuthal order m (points), optionally the analytic modes as crosses."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=figsize)
+    c0 = 299792458.0
+    if analytic:
+        ax.plot([a["m"] for a in analytic], [c0 / (a["lam_nm"] * 1e-9) / 1e12 for a in analytic], "x", color="0.4", ms=9, label="analytisch (leerer Zylinder)")
+    ms_ = sorted({md["m"] for md in modes})
+    for m in ms_:
+        sel = [md for md in modes if md["m"] == m]
+        ax.plot([m] * len(sel), [md["f_THz"] for md in sel], "o", ms=6, color="C0", label="hpfem" if m == ms_[0] else None)
+    ax.set_xlabel("Azimutordnung m")
+    ax.set_ylabel("Resonanzfrequenz c / λ (THz)")
+    ax.set_xticks(ms_ if len(ms_) < 12 else None)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
