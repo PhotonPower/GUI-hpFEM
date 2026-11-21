@@ -74,18 +74,23 @@ class Job:
     def materials(self, lam_nm):
         """MaterialMap at lam_nm for every tag of the mesh (the emitter box carries 101 + index with the material of 1 + index); the background
         of the map is the surrounding medium (the contrast source of the scattered-field formulation is measured against it)."""
-        bad = [n for n in self.names if fm.is_crystal(self.model["materials"][n])]
-        if bad:
-            raise ValueError(f"Kristalle ({', '.join(bad)}) sind bei Rotationskörpern nicht möglich")
         e_bg = fm.eps_at(self.model["materials"][self.model["background"]], lam_nm)
         mm = self.h.MaterialMap(self.h.Material(complex(e_bg)))
         eps = {}
         for t in self.tags:
             name = self.names[(t - 1) % fa.TAG_SOURCE]
-            e = fm.eps_at(self.model["materials"][name], lam_nm)
-            eps[name] = e
-            mm.set(int(t), self.h.Material(complex(e)))
+            eps[name] = fm.eps_at(self.model["materials"][name], lam_nm)
+            mm.set(int(t), self.material(name, lam_nm))
         return mm, eps
+
+    def material(self, name, lam_nm):
+        """hpfem.Material of the model's material ``name``: isotropic, or for a crystal the tensor read in (r, phi, z) (x -> r, y -> phi, z -> z;
+        it must be diagonal there: an optic axis tilted against the symmetry axis breaks the rotational symmetry)."""
+        spec = self.model["materials"][name]
+        if not fm.is_crystal(spec):
+            return self.h.Material(complex(fm.eps_at(spec, lam_nm)))
+        d = fm.axi_diagonal(spec, lam_nm)
+        return self.h.Material.anisotropic(np.diag(d).astype(complex))
 
     def pml(self, k0):
         h, lay = self.h, self.lay
@@ -472,7 +477,9 @@ def scattering_point(job, lam_nm, surface, want_field=False, theta_samples=181):
         pattern[f"pattern_{key}"] = (np.abs(np.asarray(F.f_theta)) ** 2 + np.abs(np.asarray(F.f_phi)) ** 2).tolist()   # dsigma/dOmega, |E0| = 1
     out.update(pattern)
     sph = single_sphere(model)
-    if sph:
+    if sph and fm.is_crystal(model["materials"][sph[1]]):
+        say("WARN Mie-Referenz entfällt: die Kugel ist anisotrop")
+    elif sph:
         try:
             n_s = complex(np.sqrt(fm.eps_at(model["materials"][sph[1]], lam_nm) + 0j))
             out["mie"] = mie(lam_nm, sph[0], n_s, n_bg)
@@ -616,8 +623,7 @@ def offaxis_run(job, values, em, folder, out, flush):
         say(f"PROGRESS {i + 1}/{n} lambda = {lam:.3f} nm (off the axis: rho = {', '.join(f'{r:g}' for r in radii_nm)} nm)")
         t0 = time.time()
         try:
-            _, eps = job.materials(lam)
-            mats = {int(t): h.Material(complex(eps[job.names[(t - 1) % fa.TAG_SOURCE]])) for t in job.tags}
+            mats = {int(t): job.material(job.names[(t - 1) % fa.TAG_SOURCE], lam) for t in job.tags}
             cover = h.Material(complex(fm.eps_at(model["materials"][model["background"]], lam)))
             if plan:
                 stack, _lossless = layer_stack(job, lam)

@@ -1,4 +1,4 @@
-"""Emitters (hp-FEM 0.5): planar model and job, emitter of a periodic cell (validation, mesh refinement), figures and tables from synthetic
+"""Emitters (hp-FEM 0.5): emitter of a periodic cell (validation, mesh refinement), figures and tables from synthetic
 results, off-axis emitters of bodies of revolution (radii, boxes, validation, figures). Pure Python, no hpfem."""
 import copy
 import json
@@ -15,72 +15,6 @@ import fem_axi as fa
 import fem_emit as fe
 import fem_geometry as fg
 import fem_materials as fm
-
-
-# ----------------------------------------------------------------------------------------------------------------------------- planar
-def test_planar_default_valid_and_job_is_json():
-    m = fe.default_planar()
-    assert fe.planar_validate(m) == []
-    job = fe.planar_job(m)
-    json.dumps(job)
-    p = job["planar"]
-    assert p["wavelengths_nm"] == [600.0] and len(p["heights_nm"]) == 12
-    assert set(p["materials"]) == {"Wasser", "Au", "Glas"}
-
-
-def test_planar_presets_all_valid():
-    for name, m in fe.planar_presets().items():
-        errs = [t for lvl, t in fe.planar_validate(m) if lvl == "error"]
-        assert not errs, (name, errs)
-
-
-def test_planar_validation_errors():
-    m = fe.default_planar()
-    m["heights"]["start"] = 0.0
-    assert any("größer als 0" in t for _, t in fe.planar_validate(m))
-    m = fe.default_planar()
-    m["materials"]["Wasser"] = {"type": "eps", "re": 1.77, "im": 0.1}                    # lossy host
-    assert any("verlustfrei" in t for _, t in fe.planar_validate(m))
-    m = fe.default_planar()
-    m["detectors"][1]["side"] = "cover"                                                    # overlapping regions on one side
-    assert any("überlappen" in t for _, t in fe.planar_validate(m))
-    m = fe.default_planar()
-    m["layers"][0]["thickness_nm"] = -1.0
-    assert any("Dicke" in t for _, t in fe.planar_validate(m))
-    m = fe.default_planar()
-    m["materials"]["Au"] = {"type": "crystal", "kind": "uniaxial", "n_o": 1.6, "k_o": 0.0, "n_e": 1.5, "k_e": 0.0, "theta_deg": 0.0, "phi_deg": 0.0}
-    assert any("Kristall" in t for _, t in fe.planar_validate(m))
-
-
-def test_sweep_and_heights():
-    sw = {"mode": "wavelength", "start": 500.0, "stop": 700.0, "n": 3}
-    assert fe.sweep_list(sw) == [500.0, 600.0, 700.0]
-    assert fe.sweep_list({"mode": "single", "start": 633.0, "stop": 0, "n": 9}) == [633.0]
-    assert fe.heights_list({"start": 10.0, "stop": 30.0, "n": 3}) == [10.0, 20.0, 30.0]
-
-
-def planar_point(i=0, lam=600.0):
-    h = np.array([20.0, 50.0, 100.0])
-    th = np.linspace(0.0, math.pi / 2, 20)
-    far = {side: dict(theta=th.tolist(), par=np.ones((3, 20)).tolist(), perp=(0.5 * np.ones((3, 20))).tolist(), n=1.33,
-                      power_par=[0.5, 0.6, 0.7], power_perp=[0.2, 0.3, 0.4]) for side in ("cover", "substrate")}
-    return dict(index=i, lam_nm=lam, n_host=1.33, heights_nm=h.tolist(), F_par=[2.0, 1.3, 1.4], F_perp=[7.0, 3.0, 1.5],
-                rad_par=[0.5, 0.8, 1.2], rad_perp=[0.9, 0.5, 0.3], detectors=[dict(name="obj", side="cover", theta_min=0.0, theta_max=0.8)],
-                det_par=[[0.3], [0.5], [0.7]], det_perp=[[0.1], [0.1], [0.1]], convergence=dict(energy=0.01, radiated_check=1e-15), far=far,
-                substrate_lossless=True)
-
-
-def test_planar_tables_and_figures():
-    pts = [planar_point(0, 600.0), planar_point(1, 650.0)]
-    df = fe.planar_dataframe(pts, 1)
-    assert list(df["λ (nm)"].unique()) == [650.0] and len(df) == 3
-    assert df["F_iso"].iloc[0] == pytest.approx((2 * 2.0 + 7.0) / 3)
-    fr = fe.planar_fractions(pts[0])
-    assert np.allclose(fr["cover"] + fr["substrate"] + fr["lost"], 1.0) or np.all(fr["lost"] == 0.0)
-    assert fr["obj"].shape == (3,)
-    for fig in (fe.fig_planar_purcell(pts), fe.fig_planar_channels(pts[0]), fe.fig_planar_pattern(pts[0], 1), fe.fig_planar_pattern(pts[0], 99, "perp")):
-        assert fig is not None
-    assert fe.fig_planar_purcell([dict(index=0, lam_nm=1, error="x")]) is not None
 
 
 # ---------------------------------------------------------------------------------------------------------------------------- grating

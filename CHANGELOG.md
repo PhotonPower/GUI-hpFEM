@@ -9,13 +9,19 @@
   Rechenzeit (`COST` im Protokoll, „Nur die Kosten schätzen“); die Suche nach geführten Moden („Pole“) lässt sich abschalten. Das Netz wird um den Emitter
   verfeinert (σ-abhängig), die Position wird gegen Grenzflächen und Zellrand geprüft (6σ in einem verlustfreien Medium), Vorschau und Netz zeigen ihn.
   Neue Module `fem_emit.py` (Modell, Prüfung, Tabellen, Abbildungen), `fem_emit_app.py` (Oberfläche), `fem_emit_worker.py` (Rechnung im Worker).
-* Neu: Modus **„Emitter über Schichtstapel (ohne Netz)“** (Seitenleiste): Dipol über Schichten und Substrat, halbanalytisch mit
-  `dataports.planar_emitter_response`: Purcell-Faktoren F_∥ und F_⊥ über der Höhe und der Wellenlänge, Aufteilung der Leistung (oben, Substrat, absorbiert oder
-  geführt), Detektorbereiche als numerische Aperturen, Abstrahlmuster (polar). Export der Tabelle und des BindOptiX-Umschlags (`EmitterResponseTable`, JSON).
-  Vorlagen: Au-Film in Wasser, Glas, Ag mit Ti-Haftschicht. Worker `fem_planar_worker.py`.
+* Neu: Modus **„Wellenleiter und Ports“** (Seitenleiste; ersetzt den Modus „Emitter über Schichtstapel“, dessen halbanalytische Rechnung die Bibliothek weiter
+  bietet): Aufgabe **Ports** (`WaveguidePort`, `s_parameters`): Bauteil in der Chipebene (Effektivindex-Modell, H_z) zwischen modalen Ports bei x = 0 und x = L,
+  Formen Streifen, Rechteck, Scheibe, Ring und Polygon mit Priorität, Gmsh-Netz mit Verfeinerung an Grenzflächen; Ergebnis: leistungsnormierte S-Matrix (|S|², Phase),
+  Transmission, Reflexion und Verlust des Anregungskanals über der Wellenlänge, effektive Indizes der Portmoden, Feldkarte einer Anregung, CSV. Aufgabe **Moden**
+  (`PropagatingMode`): effektive Indizes und Felder E_t, E_z der geführten Moden eines Querschnitts in einem PEC-Kasten. Vorlagen: Streifen, Stufe 450 → 900 nm,
+  Querschnitt 450 × 220 nm. Module `fem_wg.py`, `fem_wg_app.py`, `fem_wg_worker.py`.
 * Neu: **Emitter außerhalb der Achse** bei Rotationskörpern (Modus „Rotationskörper“, Emitter, „außerhalb der Achse“): Abstände ρ, alle Azimutordnungen,
   `dataports.axisymmetric_emitter_response(radii=…)`. Ergebnis: Purcell-Tensor (F_ρ, F_φ, F_z, A_xz), abgestrahlter Anteil, Detektoranteile (optional mit NA) über ρ,
   Tabelle und JSON-Umschlag. Das Netz bekommt einen Kasten (6σ) je Abstand; der Worker schiebt das Netz so, dass die Oberkante des Stapels bei z = 0 liegt.
+* Neu: **Kristalle bei Rotationskörpern** (hp-FEM M19 S6): der Tensor wird in (r, φ, z) gelesen (x→r, y→φ). Erlaubt sind die optische Achse längs der Symmetrieachse, radial oder
+  azimutal, zweiachsig ohne Drehung und diagonale Tensoren; eine verkippte Achse wird mit Hinweis abgelehnt. Resonanzen, Streuung und Emitter auf der Achse; Umgebung und Emitterwirt
+  bleiben isotrop. Emitter außerhalb der Achse gehen in hp-FEM 0.5 nicht mit Kristallen (die Bibliothek bricht ab, die App meldet es vorab).
+* Neu: **Kristall-Vorlagen** in der Materialauswahl aller Modi mit Kristallunterstützung (Saphir, Quarz, Kalkspat, LiNbO3, Rutil, MgF2; konstante Hauptindizes bei λ0).
 * Neu: Materialien **Ti und Cr** (Johnson & Christy 1974, Haftschichten unter Gold) in der Bibliothek und in der Auswahl „aus der Bibliothek hinzufügen“.
 * Geändert: Die Bibliotheksprüfung (`fem_run.probe_library`) meldet zusätzlich `emitter`, `dataports` und `offaxis`; die App bietet nur an, was vorhanden ist.
 
@@ -28,7 +34,7 @@
 * Neu: **Kristalle (anisotrope Materialien)** im Materialeditor (hp-FEM M19, ADR-0015): einachsig (n_o, n_e, Achse über θ gegen die Normale und φ
   gegen x), zweiachsig (drei Hauptindizes, Euler-Winkel z-x-z) oder voller symmetrischer Tensor, im Laborsystem (x quer zu den Linien, y längs, z die
   Normale); in Formen, Schichten und Substrat, das Einfallsmedium bleibt isotrop. Nur mit dem Löser `hpfem.grating` (Schichten oder Substrat aus
-  Kristall: `AnisotropicStack`); Rotationskörper lehnen Kristalle ab.
+  Kristall: `AnisotropicStack`).
 * Neu: **Jones- und Mueller-Matrizen** je ausbreitungsfähiger Ordnung (`hpfem.grating.jones`, Option „Jones- und Mueller-Matrizen berechnen“):
   Reiter „Jones / Mueller“ mit der Mueller-Matrix (Einzelpunkt als Karte, Durchlauf als 4×4 Kurven, normiert auf m_00) und der Jones-Tabelle
   (Betrag, Phase, Effizienz); bei einem Kristallsubstrat sind die Zeilen der transmittierten Matrix die beiden Moden. Gegen die analytische

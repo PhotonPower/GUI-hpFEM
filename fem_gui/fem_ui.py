@@ -49,11 +49,11 @@ def unique_name(model, base):
     return n
 
 
-def crystal_editor(spec, key, changed):
+def crystal_editor(spec, key, changed, axi=False):
     """Parameters of a crystal spec (fem_materials, type "crystal"): kind, principal indices and orientation in the laboratory frame."""
     kind = st.selectbox("Kristallart", list(CRYSTAL_LABELS), index=list(CRYSTAL_LABELS).index(spec.get("kind", "uniaxial")), format_func=CRYSTAL_LABELS.get,
-                        key=f"{key}_kind", help="Laborsystem: x quer zu den Gitterlinien, y längs der Linien, z die Normale (nach oben). "
-                                                "Konstante Hauptindizes (keine Dispersion).")
+                        key=f"{key}_kind", help=(fm.AXI_HELP if axi else "Laborsystem: x quer zu den Gitterlinien, y längs der Linien, z die Normale "
+                                                 "(nach oben). ") + " Konstante Hauptindizes (keine Dispersion).")
     if kind != spec.get("kind"):
         spec.clear()
         spec.update(copy.deepcopy(CRYSTAL_DEFAULT[kind]))
@@ -88,6 +88,12 @@ def crystal_editor(spec, key, changed):
                 v = float(c[k].number_input(f"{lab} ε_{'xyz'[i]}{'xyz'[j]}", value=float(spec[part][i][j]), step=0.1, format="%.5g",
                                             key=f"{key}_{part}{i}{j}"))
                 spec[part][i][j] = spec[part][j][i] = v
+    if axi:
+        try:
+            fm.axi_diagonal(spec)
+            st.caption("In (r, φ, z): ε_r, ε_φ, ε_z = " + ", ".join(f"{complex(v).real:.4f}" for v in fm.axi_diagonal(spec)) + " (x → r, y → φ, z → z).")
+        except ValueError as exc:
+            st.error(str(exc))
     try:
         w = fm.principal_values(spec, 500.0)
         n = [complex(v) ** 0.5 for v in w]
@@ -96,10 +102,11 @@ def crystal_editor(spec, key, changed):
         st.error(str(exc))
 
 
-def material_editor(model, ver, lam0, used, rename, changed, prefix="", crystals=False):
+def material_editor(model, ver, lam0, used, rename, changed, prefix="", crystals=False, axi=False):
     """Editor of model["materials"]: one expander per material (name, type, parameters, n and k at lam0, rename, delete) and the buttons to
     add a library or an own material. rename(model, old, new) renames everywhere; changed() is called before every st.rerun (bumps the widget
-    version). crystals: offer the anisotropic type (only the periodic mode with hpfem.grating supports it)."""
+    version). crystals: offer the anisotropic type (the periodic mode with hpfem.grating and the bodies of revolution take it; axi: the tensor is read in
+    (r, φ, z) and must be diagonal there), with templates (constant principal indices at λ0)."""
     types = [t for t in TYPE_LABELS if crystals or t != "crystal"]
     for name in list(model["materials"]):
         spec = model["materials"][name]
@@ -137,7 +144,7 @@ def material_editor(model, ver, lam0, used, rename, changed, prefix="", crystals
                 spec["gamma_eV"] = float(c3.number_input("ħγ (eV)", value=float(spec["gamma_eV"]), min_value=0.0, step=0.01, format="%.5g",
                                                           key=f"{prefix}md_g_{ver}_{name}"))
             elif typ == "crystal":
-                crystal_editor(spec, f"{prefix}mc_{ver}_{name}", changed)
+                crystal_editor(spec, f"{prefix}mc_{ver}_{name}", changed, axi=axi)
             else:
                 txt = st.text_area("Zeilen: Wellenlänge (nm), n, k", value="\n".join(f"{a:g}, {b:g}, {c:g}" for a, b, c in spec["rows"]),
                                    key=f"{prefix}mtab_{ver}_{name}", height=120, help="Linear interpoliert, keine Extrapolation.")
@@ -179,3 +186,12 @@ def material_editor(model, ver, lam0, used, rename, changed, prefix="", crystals
         model["materials"][unique_name(model, "Material")] = copy.deepcopy(DEFAULT_SPEC["index"])
         changed()
         st.rerun()
+    if crystals:
+        c1, c2 = st.columns([3, 2])
+        cr_pick = c1.selectbox("Kristall-Vorlage hinzufügen (konstante Indizes bei λ0, Achse längs z)", ["–"] + list(fm.CRYSTAL_PRESETS), key=f"{prefix}cradd_{ver}",
+                               help="Hauptindizes n_o, n_e bei der in der Vorlage genannten Wellenlänge, ohne Dispersion; die optische Achse liegt längs z "
+                                    "(c-Schnitt). Winkel und Indizes lassen sich danach im Material ändern.")
+        if c2.button("Kristall hinzufügen", key=f"{prefix}cradd_btn_{ver}", disabled=cr_pick == "–"):
+            model["materials"][unique_name(model, cr_pick.split(" (")[0])] = fm.crystal_preset(cr_pick)
+            changed()
+            st.rerun()

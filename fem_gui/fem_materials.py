@@ -46,6 +46,25 @@ _CONSTANT = {"vacuum": 1.0, "air": 1.000293**2}
 LIBRARY = ["Si", "Ag", "Au", "Al", "Ti", "Cr", "GaAs", "MAPbI3", "SiO2", "TiO2", "water", "air", "vacuum"]
 CRYSTAL_KINDS = ("uniaxial", "biaxial", "tensor")
 
+# Kristall-Vorlagen: konstante Hauptindizes bei der genannten Wellenlänge λ0 (keine Dispersion!), optische Achse längs z
+# (c-Schnitt bzw. Symmetrieachse). Literaturwerte (Malitson & Dodge 1972 für Saphir, hpfem.materials.get("Al2O3"); die übrigen aus
+# gängigen Handbüchern, auf drei bis vier Stellen). Wellenlänge in nm.
+CRYSTAL_PRESETS = {
+    "Saphir Al2O3 (c-Schnitt, 589 nm)": dict(lam_nm=589.3, n_o=1.7681, n_e=1.7600),
+    "Quarz SiO2 (einachsig +, 589 nm)": dict(lam_nm=589.3, n_o=1.5443, n_e=1.5534),
+    "Kalkspat CaCO3 (einachsig −, 589 nm)": dict(lam_nm=589.3, n_o=1.6584, n_e=1.4864),
+    "Lithiumniobat LiNbO3 (633 nm)": dict(lam_nm=633.0, n_o=2.2864, n_e=2.2028),
+    "Rutil TiO2 (einachsig +, 589 nm)": dict(lam_nm=589.3, n_o=2.613, n_e=2.909),
+    "Magnesiumfluorid MgF2 (589 nm)": dict(lam_nm=589.3, n_o=1.3777, n_e=1.3895),
+}
+
+
+def crystal_preset(name: str, theta_deg: float = 0.0, phi_deg: float = 0.0) -> dict:
+    """Spec (Typ ``crystal``, einachsig) der Vorlage ``name``; die Achse liegt standardmäßig längs z."""
+    v = CRYSTAL_PRESETS[name]
+    return {"type": "crystal", "kind": "uniaxial", "n_o": v["n_o"], "k_o": 0.0, "n_e": v["n_e"], "k_e": 0.0, "theta_deg": float(theta_deg),
+            "phi_deg": float(phi_deg)}
+
 _data_dir: Path | None = None
 _cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
@@ -164,6 +183,23 @@ def tensor_at(spec, lam_nm: float) -> np.ndarray:
             raise ValueError("Kristall: der Tensor muss symmetrisch sein (ε = εᵀ, keine gyrotropen Medien)")
         return m
     raise KeyError(f"unbekannte Kristallart '{kind}'")
+
+
+AXI_HELP = ("Rotationskörper: der Tensor wird in den Zylinderkomponenten (r, φ, z) gelesen, z ist die Symmetrieachse. Erlaubt sind "
+            "einachsige Kristalle mit der optischen Achse längs z (θ = 0°), radial (θ = 90°, φ = 0°) oder azimutal (θ = 90°, φ = 90°), "
+            "zweiachsige Kristalle ohne Drehung (Euler 0°: n1 = n_r, n2 = n_φ, n3 = n_z) und diagonale Tensoren. Eine gegen die Achse "
+            "verkippte optische Achse bricht die Rotationssymmetrie und wird abgelehnt.")
+
+
+def axi_diagonal(spec, lam_nm: float = 500.0):
+    """(ε_r, ε_φ, ε_z) eines Materials für den Rotationskörper-Löser; ``ValueError`` mit Hinweis, wenn der Tensor in (r, φ, z) nicht
+    diagonal ist (verkippte Achse)."""
+    t = tensor_at(spec, lam_nm)
+    scale = float(np.abs(t).max()) or 1.0
+    off = max(abs(t[i, j]) for i in range(3) for j in range(3) if i != j)
+    if off > 1e-9 * scale:
+        raise ValueError("Der Tensor ist in (r, φ, z) nicht diagonal (optische Achse gegen die Symmetrieachse verkippt). " + AXI_HELP)
+    return np.diag(t).copy()
 
 
 def principal_values(spec, lam_nm: float) -> np.ndarray:
