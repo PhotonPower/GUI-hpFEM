@@ -274,6 +274,10 @@ else:
     vi = lib.get("version_info", {})
     st.sidebar.success(f"hpfem {lib.get('hpfem', '?')}" + (f" · {', '.join(vi.get('backends', []))}" if vi.get("backends") else "") +
                        (f" · {vi['threads']} Threads" if vi.get("threads") else ""))
+    if lib.get("older_source"):
+        o = lib["older_source"]
+        st.sidebar.warning(f"Der Quell-Build im hp-FEM-Ordner ist älter ({o['source']}) als das installierte hpfem ({o['installed']}) und wird "
+                           "stattdessen benutzt. Neu bauen oder das Feld „Quellordner“ leeren.")
     missing = [lab for k, lab in (("grating", "grating.solve"), ("jacobian", "Ableitungen"), ("resonances", "Resonanzen"), ("dwr", "DWR-Schätzer"))
                if not FEATS.get(k)]
     if missing:

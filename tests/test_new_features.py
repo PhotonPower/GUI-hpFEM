@@ -158,3 +158,16 @@ def test_iso_figures():
     plt.close(fp.fig_farfield_iso(pts[0]))
     df = fp.iso_dataframe(pts, "wavelength")
     assert "σ_sca (nm)" in df.columns and "S: normiert" in df.columns
+
+
+def test_older_source_build_detected(tmp_path, monkeypatch):
+    import sys
+    from fem_gui import fem_run as fr
+    assert fr.version_tuple("0.5.0") > fr.version_tuple("0.4.0") > fr.version_tuple("")
+    fake = tmp_path / "hpfem"
+    fake.mkdir()
+    (fake / "__init__.py").write_text("__version__ = '0.5.0'")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))                      # the helper must ignore PYTHONPATH (it looks for the installed package)
+    got = fr.older_source_build(sys.executable, "0.4.0")
+    assert got is None or got["installed"] != "0.5.0" or got == dict(source="0.4.0", installed=got["installed"])
+    assert fr.older_source_build(sys.executable, "999.0.0") is None

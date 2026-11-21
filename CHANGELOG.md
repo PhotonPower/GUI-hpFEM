@@ -2,6 +2,8 @@
 
 ## Unveröffentlicht
 
+* Neu: Warnung in der Seitenleiste, wenn der Quell-Build im hp-FEM-Ordner älter ist als das im gewählten Python installierte hpfem (der Quell-Build
+  kommt in den `PYTHONPATH` und verdeckt die neuere Version). `fem_run.older_source_build`, Eintrag `older_source` in der Bibliotheksprüfung.
 * Neu: **Emitter in der Gitterzelle** (hp-FEM 0.5, M17; Reiter 1 „Emitter in der Zelle“, Aufgabe „Emitter“ im Reiter 3): ein Gauß-Dipol in der periodischen
   Zelle. Stufe B (einzelner Dipol per Array-Scan, `grating.dipole_emission`): Purcell-Faktor je Orientierung, Anteile nach oben, unten und nicht abgestrahlt
   (absorbiert oder geführt) und Leistung in Sammelaperturen (`grating.emission_cone`); Stufe A (Bloch-Array, `grating.emit`, Leistung je Ordnung); Stufe C

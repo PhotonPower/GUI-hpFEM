@@ -190,8 +190,33 @@ def probe_library(py, repo, timeout=120):
         return dict(error=f"{type(exc).__name__}: {exc}")
     for line in (p.stdout or "").splitlines():
         if line.startswith("PROBE"):
-            return json.loads(line[5:])
+            out = json.loads(line[5:])
+            if source_has_module(repo) and not out.get("error"):
+                out["older_source"] = older_source_build(py, out.get("hpfem"), flags, timeout)
+            return out
     return dict(error=((p.stderr or "") + (p.stdout or "")).strip()[-800:] or f"Code {p.returncode}")
+
+
+def version_tuple(v):
+    """'0.5.0' -> (0, 5, 0); non-numeric parts are ignored."""
+    return tuple(int(x) for x in re.findall(r"\d+", str(v or ""))[:3])
+
+
+def older_source_build(py, source_version, flags=0, timeout=120):
+    """If the source build (PYTHONPATH) hides a newer hpfem installed in the chosen Python: {source, installed}, else None."""
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    env.pop("PYTHONPATH", None)
+    try:
+        p = subprocess.run([str(py), "-c", "import hpfem; print('V' + hpfem.__version__)"], cwd=str(HERE), env=env, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout, creationflags=flags)
+    except Exception:
+        return None
+    for line in (p.stdout or "").splitlines():
+        if line.startswith("V"):
+            inst = line[1:].strip()
+            if version_tuple(inst) > version_tuple(source_version):
+                return dict(source=str(source_version), installed=inst)
+    return None
 
 
 def read_log(folder, tail=None):
