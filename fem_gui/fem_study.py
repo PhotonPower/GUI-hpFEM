@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 TASKS = ("optimize", "reconstruct", "uq")
+OPT_METHODS = ("bayesian", "L-BFGS-B", "Nelder-Mead", "differential-evolution", "pareto", "multi_fidelity")
 TASK_LABELS = {"optimize": "Optimierung", "reconstruct": "Rekonstruktion (Anpassung an Messwerte)", "uq": "Unsicherheiten und Sensitivität (UQ)"}
 STATUS_LABELS = {"ok": "ok", "failed": "fehlgeschlagen", "cancelled": "abgebrochen", "invalid": "ungültig"}
 
@@ -50,6 +51,104 @@ def template(task):
     job["name"] = f"lamellar {task}"
     job[task] = copy.deepcopy(TASK_DEFAULTS[task])
     return job
+
+
+def template_constrained():
+    """The cheap lamellar cell with an optimisation under constraints: maximise R0 of the first configuration while the second configuration stays below
+    0.9 (outcome constraint) and the width stays within 185-210 nm (linear constraint); eight evaluations."""
+    job = template("optimize")
+    job["name"] = "lamellar optimize constrained"
+    job["optimize"].update(objective=0, maximize=True, method="bayesian", max_evaluations=8,
+                           constraints=[{"observable": 2, "upper": 0.9, "name": "R500 <= 0.9"}],
+                           linear_constraints=[{"coefficients": {"width": 1.0}, "lower": 185, "upper": 210, "name": "Breite 185-210 nm"}])
+    return job
+
+
+def _num(v, where):
+    if v is None or (isinstance(v, str) and not v.strip()) or (isinstance(v, float) and v != v):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"{where}: {v!r} ist keine Zahl.") from None
+
+
+def parse_coefficients(text):
+    """'width: 1, eps: 0.5' -> {'width': 1.0, 'eps': 0.5}; ValueError with a German message otherwise."""
+    out = {}
+    for part in str(text or "").replace(";", ",").split(","):
+        if not part.strip():
+            continue
+        if ":" not in part:
+            raise ValueError(f"Koeffizient {part.strip()!r}: Form „Parameter: Zahl“ erwartet.")
+        n, v = part.split(":", 1)
+        out[n.strip()] = _num(v, f"Koeffizient von {n.strip()}")
+        if out[n.strip()] is None:
+            raise ValueError(f"Koeffizient von {n.strip()}: Zahl fehlt.")
+    return out
+
+
+def apply_extended(job, *, method, outcome=(), linear=(), objectives=(), maximize=(), ref_point="", fidelities="", max_evaluations=None):
+    """A copy of an optimisation job with the extended keys of the block ``optimize`` set from the form (the old extended keys are removed first).
+    outcome: rows (observable name or index, lower, upper); linear: rows (coefficient text, lower, upper); objectives / maximize: for method pareto;
+    ref_point: 'a, b' (optional); fidelities: '2, 3, 4' polynomial orders for multi_fidelity. ValueError with a German message for bad input."""
+    new = copy.deepcopy(job)
+    spec = new.setdefault("optimize", {})
+    for key in ("constraints", "linear_constraints", "objectives", "ref_point", "fidelities"):
+        spec.pop(key, None)
+    spec["method"] = method
+    if max_evaluations:
+        spec["max_evaluations"] = int(max_evaluations)
+    labels = observable_labels(job)
+    cons = []
+    for i, (obs, lo, hi) in enumerate(outcome):
+        if obs is None or (isinstance(obs, str) and not obs.strip()):
+            continue
+        idx = _observable_index(obs, labels)
+        if idx is None:
+            raise ValueError(f"Nebenbedingung {i + 1}: {obs!r} ist keine Messgröße.")
+        c = {"observable": labels[idx], "name": f"g{i}"}
+        lo, hi = _num(lo, f"Nebenbedingung {i + 1}, untere Grenze"), _num(hi, f"Nebenbedingung {i + 1}, obere Grenze")
+        if lo is None and hi is None:
+            raise ValueError(f"Nebenbedingung {i + 1}: untere und/oder obere Grenze angeben.")
+        if lo is not None:
+            c["lower"] = lo
+        if hi is not None:
+            c["upper"] = hi
+        cons.append(c)
+    if cons:
+        spec["constraints"] = cons
+    lins = []
+    for i, (text, lo, hi) in enumerate(linear):
+        if not str(text or "").strip():
+            continue
+        coef = parse_coefficients(text)
+        lo, hi = _num(lo, f"Parameterbedingung {i + 1}, untere Grenze"), _num(hi, f"Parameterbedingung {i + 1}, obere Grenze")
+        if lo is None and hi is None:
+            raise ValueError(f"Parameterbedingung {i + 1}: untere und/oder obere Grenze angeben.")
+        c = {"coefficients": coef, "name": f"c{i}"}
+        if lo is not None:
+            c["lower"] = lo
+        if hi is not None:
+            c["upper"] = hi
+        lins.append(c)
+    if lins:
+        spec["linear_constraints"] = lins
+    if method == "pareto":
+        spec["objectives"] = [labels[_observable_index(o, labels)] for o in objectives]
+        spec["maximize"] = [bool(v) for v in maximize]
+        if str(ref_point or "").strip():
+            ref = [_num(v, "Referenzpunkt") for v in str(ref_point).replace(";", ",").split(",") if v.strip()]
+            spec["ref_point"] = ref
+    elif method == "multi_fidelity":
+        orders = [int(float(v)) for v in str(fidelities or "").replace(";", ",").split(",") if v.strip()]
+        spec["fidelities"] = [{"order": p} for p in orders]
+    if method != "pareto":
+        spec["maximize"] = bool(spec["maximize"][0]) if isinstance(spec.get("maximize"), list) and spec["maximize"] else bool(spec.get("maximize", False))
+    errs = check_optimize(new, [p["name"] for p in new.get("parameters", [])])
+    if errs:
+        raise ValueError(" ".join(errs))
+    return new
 
 
 # ----------------------------------------------------------------------------------------------------------------- reading
@@ -125,6 +224,8 @@ def check_job(job):
         elif not any(k in p for k in ("trapezoid", "field", "material")):
             errs.append(f"parameters[{i}] ({p['name']}): gib \"trapezoid\", \"field\" (mit \"shape\") oder \"material\" an.")
     task = job.get("task")
+    if task == "optimize":
+        errs.extend(check_optimize(job, names))
     if task == "reconstruct":
         block = job.get("reconstruct", {})
         if ("measured" in block) == ("synthetic" in block):
@@ -137,6 +238,87 @@ def check_job(job):
             for n in inputs:
                 if n not in names:
                     errs.append(f"uq.inputs: unbekannter Parameter {n!r}.")
+    return errs
+
+
+def observable_labels(job):
+    """Names of the observables of a job as hpfem.opt names them (``"s 405nm 40deg: R0"``): one per configuration and order."""
+    unit = float((job or {}).get("unit", 1e-9))
+    out = []
+    for c in (job or {}).get("configurations", []) if isinstance(job, dict) else []:
+        wl = float(c.get("wavelength", 0.0)) * unit / 1e-9
+        phi = float(c.get("phi_deg", 0.0))
+        azimuth = f"/{phi:g}deg" if phi else ""
+        for o in c.get("orders", [["R", 0]]):
+            out.append(f"{c.get('polarisation', 's')} {wl:g}nm {float(c.get('theta_deg', 0.0)):g}deg{azimuth}: {o[0]}{int(o[1])}")
+    return out
+
+
+def optimize_spec(job):
+    """The block ``optimize`` of an optimisation job ({} for other tasks)."""
+    return (job or {}).get("optimize") or {} if (job or {}).get("task") == "optimize" else {}
+
+
+def _observable_index(obs, labels):
+    """Index of an observable given by name or index in labels (None if unknown)."""
+    if isinstance(obs, bool):
+        return None
+    if isinstance(obs, int):
+        return obs if 0 <= obs < len(labels) else None
+    return labels.index(obs) if obs in labels else None
+
+
+def check_optimize(job, names):
+    """Errors of the extended keys of the block ``optimize`` (constraints, linear constraints, methods pareto and multi_fidelity)."""
+    spec = optimize_spec(job)
+    errs = []
+    labels = observable_labels(job)
+    method = spec.get("method", "bayesian")
+    if method not in OPT_METHODS:
+        errs.append(f"optimize.method {method!r}: erlaubt sind {', '.join(OPT_METHODS)}.")
+    for i, c in enumerate(spec.get("constraints") or []):
+        w = f"optimize.constraints[{i}]"
+        if not isinstance(c, dict) or _observable_index(c.get("observable", 0), labels) is None:
+            errs.append(f"{w}: \"observable\" ist keine der Messgrößen ({'; '.join(labels)}).")
+            continue
+        lo, hi = c.get("lower"), c.get("upper")
+        if lo is None and hi is None:
+            errs.append(f"{w}: \"lower\" und/oder \"upper\" angeben.")
+        elif lo is not None and hi is not None and float(lo) > float(hi):
+            errs.append(f"{w}: lower ist größer als upper.")
+    if spec.get("constraints") and method not in ("bayesian", "bo"):
+        errs.append("Nebenbedingungen an Messgrößen (optimize.constraints) gehen nur mit method \"bayesian\".")
+    for i, c in enumerate(spec.get("linear_constraints") or []):
+        w = f"optimize.linear_constraints[{i}]"
+        coef = c.get("coefficients") if isinstance(c, dict) else None
+        if not coef:
+            errs.append(f"{w}: \"coefficients\" fehlt.")
+            continue
+        for n in coef:
+            if n not in names:
+                errs.append(f"{w}: unbekannter Parameter {n!r}.")
+        lo, hi = c.get("lower"), c.get("upper")
+        if lo is None and hi is None:
+            errs.append(f"{w}: \"lower\" und/oder \"upper\" angeben.")
+        elif lo is not None and hi is not None and float(lo) > float(hi):
+            errs.append(f"{w}: lower ist größer als upper.")
+    if method == "pareto":
+        objs = spec.get("objectives") or []
+        if len(objs) < 2:
+            errs.append("method \"pareto\": \"objectives\" braucht mindestens zwei Messgrößen.")
+        for o in objs:
+            if _observable_index(o, labels) is None:
+                errs.append(f"optimize.objectives: {o!r} ist keine der Messgrößen.")
+        mx = spec.get("maximize", False)
+        if isinstance(mx, list) and len(mx) != len(objs):
+            errs.append("optimize.maximize: eine Angabe je Zielgröße.")
+        ref = spec.get("ref_point")
+        if ref is not None and len(ref) != len(objs):
+            errs.append("optimize.ref_point: ein Wert je Zielgröße.")
+    if method == "multi_fidelity":
+        fids = spec.get("fidelities") or []
+        if len(fids) < 2 or not all(isinstance(f, dict) for f in fids):
+            errs.append("method \"multi_fidelity\": \"fidelities\" braucht mindestens zwei Stufen, z. B. [{\"order\": 2}, {\"order\": 3}].")
     return errs
 
 
@@ -196,13 +378,24 @@ def info(study):
         for p in header.get("space", {}).get("parameters", []):
             if "lower" in p and p["name"] in scales:
                 bounds[p["name"]] = (p["lower"] / scales[p["name"]], p["upper"] / scales[p["name"]])
-    observables = list(res.get("observables") or header.get("evaluator", {}).get("observables") or [])
+    observables = list(res.get("observables") or header.get("evaluator", {}).get("observables") or observable_labels(job) or [])
     spec = job.get("optimize", {}) if task == "optimize" else {}
     objective = (res.get("optimize") or {}).get("objective", spec.get("objective", 0))
     if isinstance(objective, str):
         objective = observables.index(objective) if objective in observables else 0
+    res_opt = res.get("optimize") or {}
+    method = res_opt.get("method") or spec.get("method")
+    objectives, max_list = None, None
+    if method == "pareto":
+        objs = res_opt.get("objectives") or spec.get("objectives") or []
+        objectives = [_observable_index(o, observables) for o in objs]
+        objectives = [i for i in objectives if i is not None] or None
+        if objectives:
+            mx = res_opt.get("maximize", spec.get("maximize", False))
+            max_list = [bool(v) for v in mx] if isinstance(mx, list) else [bool(mx)] * len(objectives)
     return {"task": task, "names": names, "scales": scales, "bounds": bounds, "observables": observables, "objective": int(objective or 0),
-            "maximize": bool(spec.get("maximize", False)), "name": res.get("job") or job.get("name") or header.get("evaluator", {}).get("name")}
+            "maximize": bool(spec.get("maximize", False)), "name": res.get("job") or job.get("name") or header.get("evaluator", {}).get("name"),
+            "method": method, "objectives": objectives, "maximize_list": max_list}
 
 
 def history(study):
@@ -240,7 +433,48 @@ def history(study):
         row["Fehler"] = error or ""
         out.append(row)
     cols = ["Nr", *names, *obs, "Status", "aus Cache", "Zeit (s)", "Fehler"]
-    return pd.DataFrame(out, columns=cols)
+    df = pd.DataFrame(out, columns=cols)
+    if constraint_list(study.get("job")):
+        df["Zulässig"] = feasible_mask(study.get("job"), df, obs)
+    return df
+
+
+def constraint_list(job):
+    """The constraints of an optimisation job: [(name, kind, spec)] with kind "outcome" (on an observable) or "linear" (on the parameters)."""
+    spec = optimize_spec(job)
+    out = [(str(c.get("name") or f"g{i}"), "outcome", c) for i, c in enumerate(spec.get("constraints") or []) if isinstance(c, dict)]
+    out += [(str(c.get("name") or f"c{i}"), "linear", c) for i, c in enumerate(spec.get("linear_constraints") or []) if isinstance(c, dict)]
+    return out
+
+
+def constraint_violations(job, df, observables):
+    """{constraint name: boolean array over the rows of the history (True = violated)}; failed evaluations (NaN) count as not violated."""
+    out = {}
+    tol = 1e-9
+    for name, kind, c in constraint_list(job):
+        lo = -np.inf if c.get("lower") is None else float(c["lower"])
+        hi = np.inf if c.get("upper") is None else float(c["upper"])
+        if kind == "outcome":
+            idx = _observable_index(c.get("observable", 0), observables)
+            if idx is None or observables[idx] not in df:
+                continue
+            v = df[observables[idx]].to_numpy(dtype=float)
+        else:
+            coef = c.get("coefficients") or {}
+            if not coef or any(n not in df for n in coef):
+                continue
+            v = sum(float(k) * df[n].to_numpy(dtype=float) for n, k in coef.items())
+        scale = max(abs(lo) if np.isfinite(lo) else 0.0, abs(hi) if np.isfinite(hi) else 0.0, 1.0)
+        out[name] = np.isfinite(v) & ((v < lo - tol * scale) | (v > hi + tol * scale))
+    return out
+
+
+def feasible_mask(job, df, observables):
+    """True for the evaluations that satisfy every constraint of the job."""
+    bad = np.zeros(len(df), dtype=bool)
+    for m in constraint_violations(job, df, observables).values():
+        bad |= m
+    return ~bad
 
 
 def progress(study):
@@ -256,7 +490,7 @@ def progress(study):
     total = None
     spec = job.get(task, {}) if task else {}
     if task == "optimize":
-        total = spec.get("max_evaluations") or (30 if spec.get("method") in ("bayesian", "bo") else None)
+        total = spec.get("max_evaluations") or (30 if spec.get("method") in ("bayesian", "bo") else 40 if spec.get("method") in ("pareto", "multi_fidelity") else None)
     elif task == "uq" and spec.get("propagation") == "surrogate" and spec.get("points"):
         total = int(spec["points"])
     if not events:
@@ -310,10 +544,44 @@ def optimize_dataframe(study):
     inf = info(study)
     ref = {n: v.get("reference") for n, v in (res.get("parameters") or {}).items()}
     rows = [{"Größe": n, "Optimum": o["params"].get(n), "Referenz": ref.get(n), "Art": "Parameter"} for n in inf["names"]]
+    objs = inf.get("objectives") or [inf["objective"]]
     for k, name in enumerate(inf["observables"]):
         v = o.get("values")[k] if o.get("values") else None
-        rows.append({"Größe": name, "Optimum": v, "Referenz": None, "Art": "Zielgröße" if k == inf["objective"] else "Messgröße"})
+        rows.append({"Größe": name, "Optimum": v, "Referenz": None, "Art": "Zielgröße" if k in objs else "Messgröße"})
     return pd.DataFrame(rows)
+
+
+def front_dataframe(study):
+    """The Pareto front of a method "pareto" result: parameters (job units), the objectives and all observables, one row per front point
+    (empty for other results)."""
+    o = (study.get("results") or {}).get("optimize") or {}
+    front = o.get("front")
+    if not front:
+        return pd.DataFrame()
+    inf = info(study)
+    obs = inf["observables"]
+    rows = []
+    for k, f in enumerate(front):
+        row = {"Nr": k, **{n: (f.get("params") or {}).get(n) for n in inf["names"]}}
+        vals = f.get("values") or []
+        for j, name in enumerate(obs):
+            row[name] = float(np.real(vals[j])) if j < len(vals) and vals[j] is not None else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def history_front(df, inf, objectives=None, maximize=None):
+    """Non-dominated rows of the history for the objectives (observable indices, default those of the study) and their sense; evaluations that
+    violate a constraint (column "Zulässig") and failed ones are left out."""
+    obs = inf["observables"]
+    objectives = objectives or inf.get("objectives") or [inf["objective"], (inf["objective"] + 1) % max(len(obs), 1)]
+    maximize = maximize or inf.get("maximize_list") or [False] * len(objectives)
+    sel = df[(df["Status"] == "ok") & (df["Zulässig"] if "Zulässig" in df else True)]
+    cols = [obs[i] for i in objectives]
+    if sel.empty or len(cols) < 2:
+        return sel.iloc[0:0]
+    m = pareto_mask(sel[cols].to_numpy(), maximize)
+    return sel[m].sort_values(cols[0])
 
 
 def reconstruct_dataframe(study):
@@ -413,10 +681,14 @@ def fig_history(df, observable, maximize=False, optimum=None):
         return _empty("noch keine Auswertungen")
     fig, ax = plt.subplots(figsize=(8, 3.6))
     ok = df["Status"] == "ok"
+    if "Zulässig" in df and (ok & ~df["Zulässig"]).any():                     # constraints: violating evaluations are crosses and not "best"
+        bad = ok & ~df["Zulässig"]
+        ax.plot(df["Nr"][bad], df[observable][bad], "x", ms=5, color="#d62728", label=f"Nebenbedingung verletzt ({int(bad.sum())})")
+        ok = ok & df["Zulässig"]
     ax.plot(df["Nr"][ok], df[observable][ok], "o", ms=4, color="#1f77b4", label="Auswertung")
-    if (~ok).any():
-        ax.plot(df["Nr"][~ok], np.full((~ok).sum(), np.nanmin(df[observable]) if ok.any() else 0.0), "x", color="#d62728",
-                label="fehlgeschlagen")
+    failed = df["Status"] != "ok"
+    if failed.any():
+        ax.plot(df["Nr"][failed], np.full(failed.sum(), np.nanmin(df[observable]) if ok.any() else 0.0), "x", color="#d62728", label="fehlgeschlagen")
     ax.step(df["Nr"], best_so_far(df[observable].where(ok), maximize), where="post", color="#ff7f0e",
             label="bisher bestes (" + ("Maximum" if maximize else "Minimum") + ")")
     if optimum is not None:
@@ -470,15 +742,23 @@ def fig_scatter(df, x, y, color=None):
     return fig
 
 
-def fig_pareto(df, x, y, max_x, max_y):
-    """All evaluations in the plane of two observables, the Pareto front (non-dominated evaluations) highlighted and joined."""
+def fig_pareto(df, x, y, max_x, max_y, ref=None):
+    """All evaluations in the plane of two observables, the Pareto front (non-dominated evaluations) highlighted and joined. Evaluations that violate
+    a constraint (column "Zulässig") are crosses and stay off the front; ref = (x, y) of the reference point of a multi-objective run."""
     import matplotlib.pyplot as plt
 
     if df.empty or x not in df or y not in df:
         return _empty("noch keine Auswertungen")
-    front = pareto_front(df[df["Status"] == "ok"], x, y, max_x, max_y)
+    okdf = df[(df["Status"] == "ok") & (df["Zulässig"] if "Zulässig" in df else True)]
+    front = pareto_front(okdf, x, y, max_x, max_y)
     fig, ax = plt.subplots(figsize=(6.8, 4.8))
+    if "Zulässig" in df and (~df["Zulässig"]).any():
+        bad = df[~df["Zulässig"]]
+        ax.scatter(bad[x], bad[y], s=26, marker="x", color="#d62728", alpha=0.7, label=f"Nebenbedingung verletzt ({len(bad)})")
+        df = df[df["Zulässig"]]
     ax.scatter(df[x], df[y], s=22, color="0.65", label="Auswertungen")
+    if ref is not None:
+        ax.plot([ref[0]], [ref[1]], "k*", ms=11, label="Referenzpunkt")
     ax.plot(front[x], front[y], "o-", color="#d62728", ms=6, lw=1.2, label=f"Pareto-Front ({len(front)})")
     for nr, a, b in zip(front["Nr"], front[x], front[y], strict=True):
         ax.annotate(str(nr), (a, b), fontsize=7, xytext=(3, 3), textcoords="offset points")

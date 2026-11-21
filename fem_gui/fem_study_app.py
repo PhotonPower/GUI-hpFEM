@@ -29,6 +29,76 @@ def init():
             S[key] = value
 
 
+BOTORCH_HINT = ("Mehrzieloptimierung (method „pareto“) und Mehrstufen-Optimierung (method „multi_fidelity“) brauchen BoTorch im Python der Rechnung: "
+                "pip install \"hpfem[opt-bo]\" (installiert auch PyTorch).")
+
+
+def optimize_needs_botorch(job):
+    return fs.optimize_spec(job).get("method") in ("pareto", "multi_fidelity")
+
+
+def ext_form(job, ctx):
+    """Form „Nebenbedingungen und Mehrziel“: writes the extended keys of the block optimize into the job document (the JSON stays editable)."""
+    import pandas as pd
+
+    spec = fs.optimize_spec(job)
+    labels = fs.observable_labels(job)
+    names = [p["name"] for p in job["parameters"]]
+    has_bo = bool(ctx["FEATS"].get("opt_bo", False))
+    with st.expander("Nebenbedingungen und Mehrziel", expanded=bool(fr.study_needs_worker(job))):
+        st.caption("Erweiterungen der Optimierung, die der Job-Runner der Bibliothek nicht kennt (die Studie läuft dann über den Studien-Worker dieser App): "
+                   "Nebenbedingungen an Messgrößen und an die Parameter, Mehrzieloptimierung und Mehrstufen-Optimierung.")
+        k = f"st_ext_{S.st_job_ver}"
+        cur = spec.get("method", "bayesian")
+        opts = list(fs.OPT_METHODS)
+        method = st.selectbox("Verfahren", opts, index=opts.index(cur) if cur in opts else 0, key=f"{k}_m",
+                              format_func=lambda m: {"pareto": "pareto (Mehrziel, BoTorch)", "multi_fidelity": "multi_fidelity (Mehrstufen, BoTorch)",
+                                                     "bayesian": "bayesian (Gauß-Prozess)"}.get(m, m))
+        if method in ("pareto", "multi_fidelity") and not has_bo:
+            st.warning(BOTORCH_HINT + " Die Auswahl ist möglich, übernehmen und starten geht erst mit BoTorch.")
+        c = st.columns(2)
+        max_eval = c[0].number_input("Höchstzahl der Auswertungen", 2, 2000, int(spec.get("max_evaluations") or 30), key=f"{k}_n")
+        st.markdown("**Nebenbedingungen an Messgrößen** (nur mit bayesian): Messgröße muss zwischen den Grenzen liegen; leer lassen = unbegrenzt.")
+        rows = [{"Messgröße": labels[fs._observable_index(c_.get("observable", 0), labels)] if fs._observable_index(c_.get("observable", 0), labels) is not None
+                 else None, "von": c_.get("lower"), "bis": c_.get("upper")} for c_ in spec.get("constraints") or []]
+        oc = st.data_editor(pd.DataFrame(rows, columns=["Messgröße", "von", "bis"]).astype({"von": float, "bis": float}), num_rows="dynamic", key=f"{k}_oc",
+                            hide_index=True, column_config={"Messgröße": st.column_config.SelectboxColumn(options=labels, required=True)})
+        st.markdown("**Nebenbedingungen an Parameter** (lineare Kombination in Job-Einheiten): z. B. `width: 1, eps: 20` zwischen von und bis. "
+                    f"Parameter: {', '.join(names)}.")
+        rows = [{"Koeffizienten": ", ".join(f"{n}: {v:g}" for n, v in (c_.get("coefficients") or {}).items()), "von": c_.get("lower"), "bis": c_.get("upper")}
+                for c_ in spec.get("linear_constraints") or []]
+        lc = st.data_editor(pd.DataFrame(rows, columns=["Koeffizienten", "von", "bis"]).astype({"von": float, "bis": float}), num_rows="dynamic", key=f"{k}_lc",
+                            hide_index=True)
+        objectives, maximize, ref, fids = (), (), "", ""
+        if method == "pareto":
+            cur_obj = [o for o in spec.get("objectives", []) if o in labels] or labels[:2]
+            objectives = st.multiselect("Zielgrößen (mindestens zwei)", labels, default=cur_obj, key=f"{k}_obj")
+            mx = spec.get("maximize", False)
+            mxl = list(mx) if isinstance(mx, list) else [bool(mx)] * len(objectives)
+            maximize = [st.checkbox(f"{o}: maximieren", value=bool(mxl[i]) if i < len(mxl) else False, key=f"{k}_mx{i}") for i, o in enumerate(objectives)]
+            ref = st.text_input("Referenzpunkt (ein Wert je Zielgröße, optional)", value=", ".join(f"{v:g}" for v in spec.get("ref_point") or []), key=f"{k}_ref",
+                                help="Bezugspunkt der Hypervolumen-Verbesserung in Einheiten der Zielgrößen; leer: schlechtester beobachteter Wert minus 10 % der Spanne.")
+        elif method == "multi_fidelity":
+            fids = st.text_input("Ordnungen der Stufen (billigste zuerst)", value=", ".join(str(f.get("order")) for f in spec.get("fidelities", [])) or "2, 3",
+                                 key=f"{k}_fid", help="Polynomordnungen p, z. B. 2, 3, 4: die letzte ist die Zielstufe.")
+        elif method != "bayesian" and len(oc):
+            st.info("Nebenbedingungen an Messgrößen gehen nur mit dem Verfahren bayesian.")
+        blocked = method in ("pareto", "multi_fidelity") and not has_bo
+        if st.button("In das Job-Dokument übernehmen", key=f"{k}_apply", disabled=blocked):
+            try:
+                new = fs.apply_extended(
+                    job, method=method, max_evaluations=max_eval,
+                    outcome=[(r["Messgröße"], r["von"], r["bis"]) for _, r in oc.iterrows() if r["Messgröße"]],
+                    linear=[(r["Koeffizienten"], r["von"], r["bis"]) for _, r in lc.iterrows() if str(r["Koeffizienten"] or "").strip()],
+                    objectives=objectives, maximize=maximize, ref_point=ref, fidelities=fids)
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                S.st_job_text = json.dumps(new, indent=1, ensure_ascii=False)
+                S.st_job_ver += 1
+                st.rerun()
+
+
 def folder_name(job):
     name = str((job or {}).get("name") or "studie")
     return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_") or "studie"
@@ -66,11 +136,12 @@ def tab_job(work, ctx):
     left, right = st.columns([3, 2])
     with right:
         st.subheader("Vorlage oder Datei")
-        task = st.selectbox("Vorlage", list(fs.TASKS), format_func=fs.TASK_LABELS.get, key="st_tpl_task",
-                            help="Eine Lamellenzelle (Ordnung 2, zwei Konfigurationen) mit Breite und ε des Stegs als Parametern: rechnet in "
-                                 "etwa einer Sekunde je Auswertung.")
+        task = st.selectbox("Vorlage", [*fs.TASKS, "optimize_constrained"], format_func={**fs.TASK_LABELS, "optimize_constrained": "Optimierung mit Nebenbedingungen"}.get,
+                            key="st_tpl_task",
+                            help="Eine Lamellenzelle (Ordnung 2, drei Messgrößen) mit Breite und ε des Stegs als Parametern: rechnet in "
+                                 "etwa zwei Sekunden je Auswertung. „Mit Nebenbedingungen“ begrenzt eine Messgröße und die Breite.")
         if st.button("Vorlage übernehmen", key="st_tpl_load"):
-            S.st_job_text = json.dumps(fs.template(task), indent=1, ensure_ascii=False)
+            S.st_job_text = json.dumps(fs.template_constrained() if task == "optimize_constrained" else fs.template(task), indent=1, ensure_ascii=False)
             S.st_job_ver += 1
             st.rerun()
         up = st.file_uploader("Job-Datei laden (JSON)", type=["json"], key="st_upload")
@@ -114,6 +185,8 @@ def tab_job(work, ctx):
             st.caption(f"{fs.TASK_LABELS[job['task']]} · Parameter: {', '.join(names)} · {len(job['configurations'])} Konfiguration(en)")
             if job["task"] == "reconstruct" and "posterior" in job.get("reconstruct", {}) and not ctx["FEATS"].get("opt_mcmc", True):
                 st.warning("Der Posterior braucht emcee im Python der Rechnung (pip install emcee bzw. hpfem[opt-mcmc]).")
+        if job and not errs and job.get("task") == "optimize":
+            ext_form(job, ctx)
         st.download_button("Job-Datei speichern", text.encode("utf-8"), file_name=f"{folder_name(job)}.json", mime="application/json",
                            key="st_job_dl", disabled=job is None)
         folder = work / folder_name(job) if job else None
@@ -124,6 +197,13 @@ def tab_job(work, ctx):
         lib_ok = not ctx["lib"].get("error") and ctx["FEATS"].get("study", False)
         if not lib_ok:
             st.warning("Das eingestellte Python hat kein hpfem mit Studien (hpfem.run, Schema 2; hp-FEM M16 S9). Anzeigen geht trotzdem.")
+        needs_ext = bool(job) and fr.study_needs_worker(job)
+        if needs_ext and lib_ok and not ctx["FEATS"].get("study_ext", False):
+            st.error("Die erweiterten Optionen (Nebenbedingungen, Pareto, Mehrstufen) brauchen hpfem 0.5.x mit hpfem.run._optimize im eingestellten Python.")
+            lib_ok = False
+        if needs_ext and optimize_needs_botorch(job) and not ctx["FEATS"].get("opt_bo", False):
+            st.error(BOTORCH_HINT)
+            lib_ok = False
         c = st.columns(2)
         if c[0].button("Studie starten" if not resume else "Studie fortsetzen", type="primary", key="st_start", disabled=bool(errs) or not lib_ok):
             folder.mkdir(parents=True, exist_ok=True)
@@ -241,18 +321,28 @@ def tab_pareto(study):
     if df.empty or len(obs) < 2:
         st.info("Die Pareto-Front braucht Auswertungen mit mindestens zwei Messgrößen.")
         return
-    st.caption("Nicht dominierte Auswertungen zweier Messgrößen: keine andere Auswertung ist in beiden mindestens so gut und in einer besser. "
-               "Die Front zeigt den Kompromiss zwischen zwei Zielen aus allen bisherigen Auswertungen (die Optimierung selbst verfolgt ein Ziel).")
+    multi = inf.get("method") == "pareto" and inf.get("objectives")
+    st.caption("Nicht dominierte Auswertungen zweier Messgrößen: keine andere Auswertung ist in beiden mindestens so gut und in einer besser. " +
+               ("Diese Studie ist eine Mehrzieloptimierung: Vorgabe sind ihre Zielgrößen; der Referenzpunkt ist als Stern eingezeichnet. " if multi else
+                "Die Front zeigt den Kompromiss zwischen zwei Zielen aus allen bisherigen Auswertungen (die Optimierung selbst verfolgt ein Ziel). ") +
+               ("Auswertungen, die eine Nebenbedingung verletzen, sind rote Kreuze und zählen nicht zur Front." if "Zulässig" in df else ""))
+    d0 = inf["objectives"][0] if multi else 0
+    d1 = inf["objectives"][1] if multi else 1
+    m0 = inf["maximize_list"][0] if multi else False
+    m1 = inf["maximize_list"][1] if multi else True
     c = st.columns(4)
-    x = c[0].selectbox("Größe 1", obs, index=0, key="st_p_x")
-    mx = c[1].radio("Größe 1", ["max", "min"], horizontal=True, key="st_p_mx", label_visibility="hidden") == "max"
-    y = c[2].selectbox("Größe 2", obs, index=1, key="st_p_y")
-    my = c[3].radio("Größe 2", ["max", "min"], horizontal=True, index=1, key="st_p_my", label_visibility="hidden") == "max"
+    x = c[0].selectbox("Größe 1", obs, index=d0, key="st_p_x")
+    mx = c[1].radio("Größe 1", ["max", "min"], horizontal=True, index=0 if m0 else 1, key="st_p_mx", label_visibility="hidden") == "max"
+    y = c[2].selectbox("Größe 2", obs, index=d1, key="st_p_y")
+    my = c[3].radio("Größe 2", ["max", "min"], horizontal=True, index=0 if m1 else 1, key="st_p_my", label_visibility="hidden") == "max"
     if x == y:
         st.warning("Zwei verschiedene Größen wählen.")
         return
-    ui.show_fig(fs.fig_pareto(df, x, y, mx, my), "pareto.png", "st_p_png")
-    front = fs.pareto_front(df[df["Status"] == "ok"], x, y, mx, my)
+    ref = (study.get("results") or {}).get("optimize", {}).get("ref_point") if multi else None
+    ref = (ref[0], ref[1]) if ref and len(ref) >= 2 and (x, y) == (obs[d0], obs[d1]) else None
+    ui.show_fig(fs.fig_pareto(df, x, y, mx, my, ref), "pareto.png", "st_p_png")
+    ok_df = df[(df["Status"] == "ok") & (df["Zulässig"] if "Zulässig" in df else True)]
+    front = fs.pareto_front(ok_df, x, y, mx, my)
     ui.table_show(front[["Nr", *inf["names"], *obs]])
     st.download_button("Front als CSV", ui.csv_bytes(front), file_name="pareto.csv", mime="text/csv", key="st_p_csv")
 
@@ -274,6 +364,22 @@ def tab_result(study):
             f"{o['method']}: {'Maximum' if inf['maximize'] else 'Minimum'} von „{inf['observables'][inf['objective']]}“ = {o['value']:.6g} "
             f"nach {o['evaluations']} Auswertungen ({o['new_evaluations']} neu, {o['cache_hits']} aus dem Speicher). {o.get('message', '')}")
         ui.table_show(fs.optimize_dataframe(study))
+        if o.get("method") == "pareto":
+            fr_df = fs.front_dataframe(study)
+            st.markdown(f"**Pareto-Front der Mehrzieloptimierung** ({len(fr_df)} Punkte; Ziele: {', '.join(o.get('objectives', []))})")
+            ui.table_show(fr_df)
+            st.download_button("Front als CSV", ui.csv_bytes(fr_df), file_name="front.csv", mime="text/csv", key="st_front_csv")
+            st.caption("Die Tabelle „Optimum“ oben zeigt den ersten Punkt der Front (kleinster Wert der ersten Zielgröße); die Front ist die Lösung.")
+        if o.get("method") == "multi_fidelity":
+            st.caption("Stufen: " + ", ".join(f"p = {f.get('order')}" for f in o.get("fidelities", [])) + ". Das Ergebnis ist die beste Auswertung auf der letzten Stufe.")
+        cl = fs.constraint_list(study.get("job"))
+        if cl:
+            hist = fs.history(study)
+            bad = fs.constraint_violations(study.get("job"), hist, inf["observables"])
+            n_bad = {n: int(m.sum()) for n, m in bad.items()}
+            st.markdown("**Nebenbedingungen**: " + "; ".join(f"{n} ({'Messgröße' if k == 'outcome' else 'Parameter'}): {n_bad.get(n, 0)} Auswertungen verletzen sie" for n, k, _ in cl))
+            if o.get("feasible") is False:
+                st.warning("Das Ergebnis erfüllt die Nebenbedingungen an Messgrößen nicht: es wurde kein zulässiger Punkt gefunden (Grenzen lockern oder mehr Auswertungen).")
     elif task == "reconstruct":
         rec = res["reconstruct"]
         (st.success if rec.get("success") else st.warning)(
@@ -340,6 +446,10 @@ neu erzeugt, sondern verformt (`morph`), so dass die Ableitungen der Bibliothek 
 
 - **Optimierung** (`optimize`): ein Ziel (`objective`, Index oder Name einer Messgröße), `maximize`, Verfahren `L-BFGS-B` (mit Ableitungen),
   `Nelder-Mead`, `differential-evolution` oder `bayesian` (Gauß-Prozess, `acquisition` `ei` oder `lcb`, `use_gradients`).
+  **Erweitert** (Formular „Nebenbedingungen und Mehrziel“, Studien-Worker der App statt `hpfem.run`): `constraints` (Messgröße zwischen `lower` und
+  `upper`, nur `bayesian`), `linear_constraints` (`coefficients` auf die Parameter in Job-Einheiten, `lower`, `upper`; alle Verfahren), Verfahren
+  `pareto` (`objectives`, `maximize`, `ref_point`; BoTorch, `pip install "hpfem[opt-bo]"`) und `multi_fidelity` (`fidelities`, z. B.
+  `[{"order": 2}, {"order": 3}]`; BoTorch).
 - **Rekonstruktion** (`reconstruct`): `measured` (Messwerte in der Reihenfolge der Messgrößen) mit `sigma`, oder `synthetic` (Daten aus dem
   Modell mit Rauschen, zum Prüfen); Levenberg-Marquardt mit Unsicherheiten aus der Laplace-Näherung, mit `posterior` zusätzlich Stichproben
   (emcee).

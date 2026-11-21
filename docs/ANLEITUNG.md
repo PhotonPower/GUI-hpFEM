@@ -285,6 +285,23 @@ Polarisation und Ordnungen), nicht im Modell der anderen Modi. Das Netz wird fü
    mit `posterior` die emcee-Randverteilungen (68 %- und 95 %-Bereich); bei UQ Mittel, σ und Quantile jeder Messgröße und die Sobol'-Indizes
    (erste Ordnung und total) als Balken.
 
+**Nebenbedingungen, Mehrziel, Mehrstufen (Optimierung).** Der Job-Runner der Bibliothek kennt nur ein Ziel ohne Nebenbedingungen. Das Formular
+„Nebenbedingungen und Mehrziel“ in Reiter 1 (sichtbar bei der Aufgabe Optimierung) schreibt die Erweiterungen ins Job-Dokument; solche Studien laufen über
+den Studien-Worker der App (`fem_study_worker.py`, der Runner mit ersetztem Optimierungsschritt, hpfem 0.5.x), alle anderen wie bisher über `hpfem.run`.
+- **Nebenbedingungen an Messgrößen** (`optimize.constraints`, Messgröße zwischen `lower` und `upper`, nur Verfahren bayesian): ein eigener Gauß-Prozess
+  je Nebenbedingung, die Suche gewichtet die erwartete Verbesserung mit der Wahrscheinlichkeit der Zulässigkeit.
+- **Nebenbedingungen an Parameter** (`optimize.linear_constraints`, Koeffizienten in Job-Einheiten, z. B. `width: 1, eps: 20` zwischen von und bis): unzulässige
+  Punkte werden nie gerechnet, für alle Verfahren.
+- **Mehrziel** (Verfahren `pareto`, mindestens zwei `objectives`, `maximize` je Ziel, optional `ref_point`): Bayes-Optimierung mit BoTorch
+  (`pip install "hpfem[opt-bo]"`, installiert auch PyTorch). Ohne BoTorch lässt sich die Option wählen, aber nicht übernehmen oder starten. Das Ergebnis ist
+  die Pareto-Front (Tabelle, CSV, Diagramm mit Referenzpunkt in Reiter 3 und 4). `raw_samples` und `num_restarts` im Block `optimize` steuern den
+  Aufwand je Schritt (Vorgabe der Bibliothek 512 und 10: bei vielen Kernen Minuten je Schritt).
+- **Mehrstufen** (Verfahren `multi_fidelity`, `fidelities` z. B. `[{"order": 2}, {"order": 3}]`, billigste zuerst, optional `costs`, `max_cost`): grobe
+  Rechnungen suchen, die letzte Stufe bestätigt; Ergebnis ist die beste Auswertung der Zielstufe.
+Auswertungen, die eine Nebenbedingung an Messgrößen verletzen, sind in Verlauf und Pareto-Reiter rote Kreuze und zählen nicht als „bestes“. Die Vorlage
+„Optimierung mit Nebenbedingungen“ (acht Auswertungen, etwa 25 s) zeigt den Aufbau. Ganzzahlige oder kategoriale Entwurfsvariablen gibt es nicht
+(der Evaluator der Gitterzelle kennt nur Geometrie- und Materialparameter).
+
 Die Vorlagen sind mit der Bibliothek durchgerechnet: die Rekonstruktion findet aus synthetischen Daten (Breite 210 nm, ε 2,3, Rauschen 0,002)
 210,5 ± 3,6 nm und 2,303 ± 0,014.
 

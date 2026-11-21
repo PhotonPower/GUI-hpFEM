@@ -89,19 +89,32 @@ def start_worker(py, repo, folder, threads=0, script="fem_worker.py"):
                             stderr=subprocess.STDOUT, creationflags=flags)
 
 
+def study_needs_worker(job):
+    """True if the job uses the extended keys of the block ``optimize`` (constraints, linear constraints, methods pareto / multi_fidelity) that only
+    fem_study_worker.py runs; every other job goes to the runner of hpfem unchanged."""
+    spec = (job or {}).get("optimize") if (job or {}).get("task") == "optimize" else None
+    spec = spec or {}
+    return bool(spec.get("constraints") or spec.get("linear_constraints") or spec.get("method") in ("pareto", "multi_fidelity"))
+
+
 def start_study(py, repo, folder, threads=0):
     """Starts the job runner of hpfem (python -m hpfem.run, job schema 2) on <folder>/job.json in the background: results.json and the study
     store <name>.study.jsonl go to <folder>, the JSON-lines events to <folder>/log.txt; <folder>/cancel stops it after the current
-    evaluation. The study store stays, so a restart with the same job replays the evaluations already done and continues."""
+    evaluation. The study store stays, so a restart with the same job replays the evaluations already done and continues. A job with extended
+    optimisation keys (study_needs_worker) runs through fem_study_worker.py, which is the same runner with the optimisation step replaced."""
     folder = Path(folder)
     for name in ("results.json", "cancel"):
         if (folder / name).exists():
             (folder / name).unlink()
+    try:
+        job = json.loads((folder / "job.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        job = {}
     log = open(folder / "log.txt", "w", encoding="utf-8")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return subprocess.Popen([str(py), "-m", "hpfem.run", str(folder / "job.json"), "--out", str(folder), "--cancel-file", str(folder / "cancel"),
-                             "--quiet"], cwd=_cwd(repo, folder), env=worker_env(repo, threads), stdout=log, stderr=subprocess.STDOUT,
-                            creationflags=flags)
+    runner = [str(py), str(HERE / "fem_study_worker.py")] if study_needs_worker(job) else [str(py), "-m", "hpfem.run"]
+    return subprocess.Popen([*runner, str(folder / "job.json"), "--out", str(folder), "--cancel-file", str(folder / "cancel"), "--quiet"],
+                            cwd=_cwd(repo, folder), env=worker_env(repo, threads), stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
 
 
 def request_cancel(folder):
@@ -177,8 +190,11 @@ try:
         import hpfem.run as hr
         feats["study"] = "optimize" in getattr(hr, "STUDY_TASKS", ())
         feats["opt_mcmc"] = __import__("importlib").util.find_spec("emcee") is not None
+        _spec = __import__("importlib").util.find_spec
+        feats["opt_bo"] = _spec("botorch") is not None and _spec("torch") is not None
+        feats["study_ext"] = hasattr(hr, "_optimize") and hasattr(hr, "_StudyModel") and str(getattr(hpfem, "__version__", "")).startswith("0.5")
     except Exception:
-        feats["study"] = feats["opt_mcmc"] = False
+        feats["study"] = feats["opt_mcmc"] = feats["opt_bo"] = feats["study_ext"] = False
     out["features"] = feats
 except Exception as exc:
     out["error"] = f"{type(exc).__name__}: {exc}"
