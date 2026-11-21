@@ -154,6 +154,7 @@ try:
         feats["offaxis"] = "radii" in inspect.signature(dpt.axisymmetric_emitter_response).parameters
     except Exception:
         feats["dataports"] = feats["offaxis"] = False
+    feats["bands"] = all(hasattr(hpfem, n) for n in ("BandStructure2D", "BandStructureSetup2D", "PeriodicPair2D"))
     feats["ports"] = all(hasattr(hpfem, n) for n in ("WaveguidePort", "s_parameters", "PropagatingMode", "subdivide"))
     feats["crystals"] = hasattr(hpfem, "AnisotropicStack") and hasattr(getattr(hpfem, "Material", None), "anisotropic")
     feats["dwr"] = hasattr(hpfem, "conical_dwr_estimate")

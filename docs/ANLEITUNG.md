@@ -104,6 +104,19 @@ Für den Slit-Groove-Benchmark beide Vorlagen rechnen („… S“ mit Rille und
 teilen. In Reiter 2 „Elemente pro Eindringtiefe“ auf etwa 0,25 stellen (die hohe Ordnung p löst den Skin-Effekt auf; 1 Element je Eindringtiefe
 ergäbe über die 10 µm Filmbreite unnötig viele Dreiecke).
 
+## Rotationskörper: Hohlraum (Reiter 3, Aufgabe „Hohlraum“)
+Die Aufgabe „Hohlraum“ rechnet die Eigenmoden eines **geschlossenen** Zylinders mit idealer Leiterwand (PEC) ohne PML (hpfem: `AxisymmetricCavity`). Reiter 1,
+Expander „Hohlraum“: Radius R, Höhe h, Bezugswellenlänge (dort werden die Permittivitäten ausgewertet und die Elementgröße bestimmt: die kleinste gesuchte
+Wellenlänge wählen), Azimutordnungen m (z. B. 0, 1, 2) und die Zahl der niedrigsten Moden je Ordnung. Gefüllt wird der Hohlraum mit dem Material „Umgebung“, die
+Teile des Modells liegen als Einsätze darin (z. B. eine dielektrische Scheibe; sie müssen in 0 ≤ r ≤ R, 0 ≤ z ≤ h liegen). Substrat, Schichten, PML und Emitter gelten
+nicht. Alle Materialien müssen verlustfrei sein; einachsige Kristalle gehen, wenn die optische Achse längs z, radial oder azimutal liegt. Reiter 2 erzeugt dafür ein eigenes
+Netz (geschlossenes Rechteck der Meridianebene), Reiter 3 rechnet je Ordnung ein reelles Eigenwertproblem (Sekundenbruchteile bis Sekunden), Reiter 4 zeigt Tabelle (m,
+Mode, λ, f = c/λ, k₀; CSV), das Diagramm der Frequenzen über m und die Modenfelder (|E|, E_r, E_φ, E_z).
+**Test mit der Vorlage „Zylinderhohlraum R = 1 µm, h = 1,5 µm“** (leer, Luft): die Ergebnistabelle ordnet jeder Mode die analytische zu (TM_mnp: k = √((j_mn/R)² + (pπ/h)²),
+TE_mnp: k = √((j′_mn/R)² + (pπ/h)²), p ≥ 1). **Gemessen** (3 Elemente je Wellenlänge, p = 3, hpfem 0.5): TM₀₁₀ bei 2613,5 nm (analytisch 2613,5 nm, Abweichung 1·10⁻⁷),
+TM₀₁₁ 1970,8 nm, TE₁₁₁ 2253,8 nm; über die 12 niedrigsten Moden (m = 0, 1, 2) ist die größte Abweichung 7·10⁻⁴ (die Paare TE₀ₙₚ/TM₁ₙₚ sind entartet, dort kann der Name
+der Partnermode erscheinen). Ein einachsiger Kristall mit der Achse längs z skaliert TM₀₁₀ mit n_e, ein isotropes Dielektrikum alle Wellenlängen mit n.
+
 ## Rotationskörper: Resonatoren und Emitter (Seitenleiste „Art des Modells“)
 Für Strukturen mit Rotationssymmetrie um die z-Achse rechnet die App jede Azimutordnung m als 2D-Problem in der Meridianebene (r ≥ 0, z). Ablauf wie
 im periodischen Modus in fünf Reitern:
@@ -236,6 +249,23 @@ n_eff = 1,98555 gegen 1,98555 aus der Dispersionsgleichung des Schichtwellenleit
 **Grenzen.** Gerade Elemente an den Rändern der Formen (Merkmale unter etwa einem Drittel der Zellgröße werden nicht aufgelöst, Gitterzähne und kleine Spalte brauchen „Faktor an Grenzflächen“ ≈ 0,5),
 isotrope Materialien, nur Ports links und rechts (keine Ports an den oberen und unteren Wänden), keine dreidimensionalen Ports (`PortModes3D`). Resonante Bauteile (Ringe, Koppler) sind
 nicht vorbereitet; sie brauchen feine Netze (Spalt und Steg aufgelöst) und viele Wellenlängen. Eine Vorlage dafür ist nicht mitgeliefert, weil ich eine Resonanz hier nicht nachgerechnet habe.
+
+## Bandstruktur (Seitenleiste „Art des Modells“ → „Bandstruktur“)
+Der Modus rechnet die Bänder eines zweidimensionalen photonischen Kristalls mit `hpfem.BandStructure2D` (Floquet-Bloch-Eigenproblem der Einheitszelle). Reiter 1: Vorlage,
+Gitter (quadratisch oder hexagonal), Materialien mit reellem ε, Formen in der Zelle (Scheibe, Rechteck, Ring, Polygon; spätere überdecken frühere, Angaben relativ zur Zellmitte
+in Einheiten der Gitterkonstante a, im ganzen Gitter wiederholt). Reiter 2: Punkte je Pfadsegment, Zahl der Bänder, Netz (Zellen je Wellenlänge, Ordnung, größte Frequenz f_max),
+optional die Modenfelder an den Eckpunkten des Pfads. Reiter 3: das Bandstrukturdiagramm f = ω a / (2π c) = a / λ entlang Γ–X–M–Γ bzw. Γ–M–K–Γ, schraffiert die Lücken über den
+ganzen Pfad mit Δf/Mitte in %, die Tabelle (CSV), das leere Gitter |k + G| als graue Referenz und die Felder |E|² oder Re E_x, Re E_y eines Bandes an einem Eckpunkt.
+
+Wichtig: Der Löser rechnet nur die Polarisation mit E in der Ebene (H_z aus der Ebene; in Joannopoulos et al. „TE“). Die bekannte TM-Lücke (E_z) quadratischer Stabgitter erscheint
+deshalb nicht; die Vorlage mit Stäben (ε = 12, r = 0,2 a) zeigt entsprechend keine Lücke. Lochgitter öffnen Lücken für diese Polarisation. Es gibt keinen Lichtkegel: die Struktur ist in z
+unendlich ausgedehnt, alle Moden sind gebunden. Es sind nur konstante, verlustfreie Materialien möglich. Das Band bei f = 0 beginnt bei Γ; der zweite Nullwert, den der Löser dort
+liefert (konstantes Feld), wird entfernt. Die Ableitungen der Bänder (Gruppengeschwindigkeit, Empfindlichkeit gegen ε und Form) hat die Bibliothek (`group_velocity`,
+`band_permittivity_derivative`, `band_shape_derivative`), die Oberfläche zeigt sie noch nicht.
+
+Gemessen (kurze Läufe, keine Validierungsstudie): das leere Gitter trifft die Bänder |k + G| (quadratisch X: 0,5000 / 0,5000 / 1,118, M: 0,7071; Dreiecksgitter M: 0,5774, K: 0,6667), das Dreiecksgitter
+aus Luftlöchern (ε = 13, r = 0,4 a, 380 Zellen) hat eine Lücke zwischen Band 1 und Band 2 von f = 0,2356 bis 0,3948 (Δf/Mitte ≈ 50 %); die Werte an M und K ändern sich zwischen p = 3 und p = 5 in den
+ersten vier Stellen nicht. Einen Vergleich mit Literaturwerten habe ich nicht gemacht.
 
 ## Studien: Optimierung, Rekonstruktion, UQ (Seitenleiste „Art des Modells“ → „Studie“)
 Eine Studie rechnet eine Gitterzelle für viele Parameterwerte mit dem Job-Runner der Bibliothek (`python -m hpfem.run`). Die Zelle wird im

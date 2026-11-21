@@ -30,6 +30,7 @@ def init():
     S.ax_solver = dict(order=2, backend="AUTO", subdivisions=2, fields=True)
     S.ax_task = "resonance"
     S.ax_mesh = None
+    S.ax_mesh_cav = None
 
 
 def bump():
@@ -37,9 +38,14 @@ def bump():
 
 
 def set_model(m):
-    S.ax_model = fa.complete(copy.deepcopy(m))
+    m = copy.deepcopy(m)
+    hint = m.pop("task_hint", None)
+    S.ax_model = fa.complete(m)
     bump()
     S.ax_mesh = None
+    S.ax_mesh_cav = None
+    if hint == "cavity":                                   # the template belongs to the task: switch the radio of tab 3 (set before the widget is built)
+        S.ax_task = S["ax_task_pick"] = "cavity"
     S.pop("ax_view_dir", None)
 
 
@@ -66,6 +72,17 @@ def mesh_range(model):
 def mesh_task(model):
     """The mesh carries the emitter box when the emitter settings are valid (then it serves both tasks)."""
     return "emitter" if not [t for lvl, t in fa.validate(model, "emitter") if lvl == "error"] else "resonance"
+
+
+def mesh_key():
+    """Session key of the mesh of the current task: the cavity has its own mesh (closed PEC box, no PML)."""
+    return "ax_mesh_cav" if S.get("ax_task") == "cavity" else "ax_mesh"
+
+
+def signature_cavity(model, ms):
+    keep = {k: model.get(k) for k in ("materials", "background", "parts")}
+    keep["cavity"] = {k: model["cavity"][k] for k in ("radius_nm", "height_nm", "lam_ref_nm")}
+    return json.dumps([keep, ms], sort_keys=True, default=str)
 
 
 def signature(model, ms):
@@ -272,6 +289,29 @@ def tab_model(model, ver, ctx):
         if wm and wm > 4:
             st.caption(f"Grobe Schätzung für Flüstergalerie-Moden des äußersten Teils bei dieser Wellenlänge: m ≈ {wm}.")
 
+        with st.expander("Hohlraum (Aufgabe „Hohlraum“ in Reiter 3: geschlossener Zylinder mit PEC-Wand)", expanded=S.get("ax_task") == "cavity"):
+            cv = model["cavity"]
+            st.caption("Der Hohlraum 0 ≤ r ≤ R, 0 ≤ z ≤ h ist ringsum von idealem Leiter umschlossen (PEC) und mit der „Umgebung“ gefüllt; die Teile (oben) "
+                       "liegen als Einsätze darin (z. B. eine dielektrische Scheibe). Substrat, Schichten, PML und Emitter gelten dafür nicht.")
+            c = st.columns(3)
+            cv["radius_nm"] = float(c[0].number_input("Radius R (nm)", 1.0, 1e7, float(cv["radius_nm"]), 50.0, format="%.6g", key=f"ax_cv_r_{ver}"))
+            cv["height_nm"] = float(c[1].number_input("Höhe h (nm)", 1.0, 1e7, float(cv["height_nm"]), 50.0, format="%.6g", key=f"ax_cv_h_{ver}"))
+            cv["lam_ref_nm"] = float(c[2].number_input("Bezugswellenlänge (nm)", 1.0, 1e7, float(cv["lam_ref_nm"]), 50.0, format="%.6g", key=f"ax_cv_l_{ver}",
+                                                       help="Bei dieser Wellenlänge werden die Permittivitäten ausgewertet (Dispersion wird nicht nachgeführt) und die "
+                                                            "Elementgröße bestimmt: die kleinste gesuchte Wellenlänge wählen."))
+            c = st.columns(2)
+            txt = c[0].text_input("Azimutordnungen m (kommagetrennt)", value=", ".join(str(int(m)) for m in cv["orders"]), key=f"ax_cv_o_{ver}",
+                                  help="Je Ordnung wird ein eigenes Eigenwertproblem gelöst (m = 0: TM₀ₙₚ und TE₀ₙₚ; m ≥ 1: gemischte Moden).")
+            try:
+                orders = sorted({int(v) for v in txt.replace(";", ",").split(",") if v.strip()})
+                if orders and min(orders) >= 0 and max(orders) <= 60:
+                    cv["orders"] = orders
+                else:
+                    st.error("Ordnungen: ganze Zahlen von 0 bis 60.")
+            except ValueError:
+                st.error("Ordnungen nicht lesbar (Beispiel: 0, 1, 2).")
+            cv["num_modes"] = int(c[1].number_input("Moden je Ordnung (die niedrigsten)", 1, 40, int(cv["num_modes"]), key=f"ax_cv_n_{ver}"))
+
         st.subheader("Emitter (Dipol auf der Achse, z. B. Quantenpunkt)")
         c = st.columns(3)
         em["z_nm"] = float(c[0].number_input("Position z (nm)", value=float(em["z_nm"]), step=10.0, format="%.6g", key=f"ax_ez_{ver}"))
@@ -349,10 +389,14 @@ def tab_model(model, ver, ctx):
         dom["pml_nm"] = float(c[1].number_input("PML-Dicke (nm)", 10.0, 1e6, float(dom["pml_nm"]), 50.0, format="%.6g", key=f"ax_dp_{ver}",
                                                 help="Zylindrische PML außen, oben und unten; dahinter eine Metallwand."))
     with right:
-        for lvl, text in fa.validate(model, "emitter"):
+        cav_task = S.get("ax_task") == "cavity"
+        for lvl, text in fa.validate(model, "cavity" if cav_task else "emitter"):
             (st.error if lvl == "error" else st.warning)(text)
         try:
-            ui.show_fig(fa.preview_figure(model), "rotationskoerper.png", f"ax_dl_prev_{ver}")
+            if cav_task:
+                ui.show_fig(fa.cavity_preview_figure(model), "hohlraum.png", f"ax_dl_cavprev_{ver}")
+            else:
+                ui.show_fig(fa.preview_figure(model), "rotationskoerper.png", f"ax_dl_prev_{ver}")
         except Exception as exc:
             st.error(f"Vorschau nicht möglich: {exc}")
         lam0 = float(rs["wavelength_nm"])
@@ -382,23 +426,30 @@ def tab_mesh(model, work):
     ms["interface_factor"] = float(c[2].slider("Verfeinerung an Grenzflächen", 0.2, 1.0, float(ms["interface_factor"]), 0.05, key="ax_ms_if"))
     ms["curved"] = c[3].checkbox("Gekrümmte Elemente", value=bool(ms["curved"]), key="ax_ms_curved")
     lam_lo, lam_hi = mesh_range(model)
-    task = mesh_task(model)
+    cav = S.get("ax_task") == "cavity"
+    task = "cavity" if cav else mesh_task(model)
     errors = [t for lvl, t in fa.validate(model, task) if lvl == "error"]
-    sig = signature(model, ms)
-    if task == "resonance":
+    sig = signature_cavity(model, ms) if cav else signature(model, ms)
+    key = mesh_key()
+    if cav:
+        st.info("Aufgabe „Hohlraum“: das Netz ist der geschlossene Zylinder (0 ≤ r ≤ R, 0 ≤ z ≤ h) ohne PML, die Elementgröße folgt der Bezugswellenlänge (Reiter 1).")
+    elif task == "resonance":
         st.info("Die Emitter-Einstellungen sind ungültig (Reiter 1): das Netz bekommt keinen Emitterkasten und taugt nur für Resonanzen.")
     if st.button("Netz erzeugen", type="primary", key="ax_mesh_btn", disabled=bool(errors)):
         with st.spinner("Gmsh vernetzt …"):
             try:
                 t0 = time.time()
-                stats = fa.build_mesh(model, dict(ms, lam_min_nm=lam_lo, lam_max_nm=lam_hi), work / "mesh", task)
+                if cav:
+                    stats = fa.build_cavity_mesh(model, ms, work / "mesh_cavity")
+                else:
+                    stats = fa.build_mesh(model, dict(ms, lam_min_nm=lam_lo, lam_max_nm=lam_hi), work / "mesh", task)
                 stats["seconds"] = time.time() - t0
-                S.ax_mesh = dict(stats=stats, sig=sig, dir=str(work / "mesh"), model=copy.deepcopy(model), err="")
+                S[key] = dict(stats=stats, sig=sig, dir=str(work / ("mesh_cavity" if cav else "mesh")), model=copy.deepcopy(model), err="")
             except Exception as exc:
-                S.ax_mesh = dict(err=str(exc))
+                S[key] = dict(err=str(exc))
     if errors:
         st.error("Das Modell hat Fehler (Reiter 1): " + " | ".join(errors))
-    mesh = S.ax_mesh
+    mesh = S.get(key)
     if mesh and mesh.get("err"):
         st.error(mesh["err"])
     elif mesh:
@@ -410,7 +461,7 @@ def tab_mesh(model, work):
         c[1].metric("Knoten", f"{stats['nodes']:,}".replace(",", "."))
         c[2].metric("Elementordnung", stats["order"])
         c[3].metric("Kante min / max", f"{stats['edge_min_nm']:.1f} / {stats['edge_max_nm']:.0f} nm")
-        c[4].metric("Emitterkasten", "ja" if stats.get("source_box_nm") else "nein")
+        c[4].metric("Emitterkasten", "ja" if stats.get("source_box_nm") else ("entfällt" if cav else "nein"))
         p = int(S.ax_solver["order"])
         st.caption(f"Grobe Schätzung der Freiheitsgrade bei p = {p}: etwa {fa.est_dofs(stats['cells'], p):,}".replace(",", ".") +
                    f". Netz in {stats.get('seconds', 0):.1f} s.")
@@ -420,7 +471,7 @@ def tab_mesh(model, work):
         with c2:
             zm = st.radio("Ausschnitt", ["ganzes Gebiet", "Struktur"], horizontal=True, key="ax_mesh_zoom")
             lay = fa.layout(mesh["model"])
-            zoom = (0.0, lay["r_struct"] * 1.2 + 50, lay["z_struct_bottom"] - 100, lay["z_struct_top"] + 100) if zm == "Struktur" else None
+            zoom = (0.0, lay["r_struct"] * 1.2 + 50, lay["z_struct_bottom"] - 100, lay["z_struct_top"] + 100) if zm == "Struktur" and not cav else None
             ui.show_fig(fa.mesh_figure(Path(mesh["dir"]) / "mesh_plot.npz", mesh["model"], zoom=zoom), "netz_meridian.png", "ax_dl_mesh")
     else:
         st.info("Noch kein Netz erzeugt.")
@@ -430,7 +481,8 @@ def tab_run(model, work, ctx):
     sv = S.ax_solver
     TASKS = {"resonance": "Resonanzen (Eigenmoden der Ordnung m, Güte Q, Modenfelder)",
              "emitter": "Emitter: Purcell-Faktor und Abstrahlung über der Wellenlänge",
-             "scattering": "Streuung einer ebenen Welle: Querschnitte, Streudiagramm, Nahfeld"}
+             "scattering": "Streuung einer ebenen Welle: Querschnitte, Streudiagramm, Nahfeld",
+             "cavity": "Hohlraum: Eigenmoden eines geschlossenen PEC-Zylinders (Frequenzen, Felder)"}
     S.ax_task = st.radio("Aufgabe", list(TASKS), index=list(TASKS).index(S.ax_task), format_func=TASKS.get, key="ax_task_pick")
     c = st.columns(4)
     sv["order"] = int(c[0].slider("Polynomordnung p", 1, 6, int(sv["order"]), key="ax_p",
@@ -464,8 +516,9 @@ def tab_run(model, work, ctx):
                 st.info("Substrat oder Schichten: das Fernfeld wird nach Reziprozität mit den ebenen Wellen des Stapels berechnet (hpfem.axisymmetric_layered_far_field), "
                         "getrennt nach oben (Umgebungsmedium) und unten (Substrat). " + text_far + " Ein verlustbehaftetes Substrat hat kein Fernfeld nach unten.")
     errs = [t for lvl, t in fa.validate(model, S.ax_task) if lvl == "error"]
-    mesh = S.ax_mesh
-    mesh_ok = bool(mesh and not mesh.get("err") and mesh["sig"] == signature(model, S.ax_ms))
+    cav = S.ax_task == "cavity"
+    mesh = S.get(mesh_key())
+    mesh_ok = bool(mesh and not mesh.get("err") and mesh["sig"] == (signature_cavity(model, S.ax_ms) if cav else signature(model, S.ax_ms)))
     if S.ax_task == "emitter" and mesh_ok and not mesh["stats"].get("source_box_nm"):
         mesh_ok = False
         st.warning("Das Netz hat keinen Emitterkasten: Emitter-Einstellungen korrigieren und das Netz neu erzeugen.")
@@ -477,8 +530,10 @@ def tab_run(model, work, ctx):
         st.warning("hpfem lässt sich im eingestellten Python nicht laden (Seitenleiste).")
     if mesh_ok:
         dofs = fa.est_dofs(mesh["stats"]["cells"], sv["order"])
-        n = {"resonance": 1, "emitter": int(model["emitter"]["sweep"]["n"]), "scattering": int(model["scattering"]["sweep"]["n"])}[S.ax_task]
-        st.caption(f"Etwa {dofs:,} Freiheitsgrade je Lösung".replace(",", ".") + (f", {n} Wellenlängen" if S.ax_task != "resonance" else "") +
+        n = {"resonance": 1, "emitter": int(model["emitter"]["sweep"]["n"]), "scattering": int(model["scattering"]["sweep"]["n"]),
+             "cavity": len(fa.cavity_orders(model))}[S.ax_task]
+        st.caption(f"Etwa {dofs:,} Freiheitsgrade je Lösung".replace(",", ".") + (f", {n} Wellenlängen" if S.ax_task in ("emitter", "scattering") else "") +
+                   (f", {n} Azimutordnung(en)" if S.ax_task == "cavity" else "") +
                    (", je Wellenlänge eine Lösung pro Azimutordnung" if S.ax_task == "scattering" else "") +
                    (" plus eine Resonanzsuche" if S.ax_task == "emitter" and model["emitter"]["sweep"]["mode"] == "resonance" else "") + ".")
     if st.button("Rechnung starten", type="primary", key="ax_run_btn", disabled=bool(errs) or not mesh_ok):
@@ -561,14 +616,16 @@ def tab_results(work):
         shutil.copytree(view, arch / name_arch, dirs_exist_ok=True)
         st.success(f"Gespeichert unter {arch / name_arch}")
     vi = meta.get("version_info") or {}
-    st.caption(f"{meta['model']} · {dict(resonance='Resonanzen', emitter='Emitter', scattering='Streuung')[meta['task']]} · p = {meta['order']} · {meta['cells']} Dreiecke · "
+    st.caption(f"{meta['model']} · {dict(resonance='Resonanzen', emitter='Emitter', scattering='Streuung', cavity='Hohlraum')[meta['task']]} · p = {meta['order']} · {meta['cells']} Dreiecke · "
                f"{meta['dofs']:,} Freiheitsgrade · Start {meta['started']}".replace(",", ".") + (f" · hpfem {vi['hpfem']}" if vi.get("hpfem") else ""))
     if res.get("error"):
         st.error(res["error"])
     if res.get("cancelled"):
         st.warning("Die Rechnung wurde abgebrochen; es fehlen Punkte.")
     rsn = res.get("resonance")
-    if meta["task"] == "resonance":
+    if meta["task"] == "cavity":
+        cavity_results(view, res, rmodel)
+    elif meta["task"] == "resonance":
         if not rsn:
             st.info("Keine Moden.")
             return
@@ -759,7 +816,63 @@ def scattering_results(view, res, model):
         st.caption(f"Ordner: {view}")
 
 
-def field_view(view, names, label, model, key, default_log=False):
+def cavity_results(view, res, model):
+    """Modes of the closed cavity: table with the analytic reference (empty cylinder), frequencies over m, mode fields."""
+    cav = res.get("cavity")
+    modes = fa.cavity_frame(res)
+    if not cav or not modes:
+        st.info("Keine Moden.")
+        return
+    R, H, lam_ref = cav["radius_nm"], cav["height_nm"], cav["lam_ref_nm"]
+    ref = None
+    if not rmodel_has_parts(model) and not fm.is_crystal(model["materials"][model["background"]]):
+        try:
+            n = float(np.sqrt(fm.eps_at(model["materials"][model["background"]], lam_ref) + 0j).real)
+            ref = fa.cavity_analytic(R, H, n, cav["orders"], count=0)
+        except Exception:
+            ref = None
+    sub = st.tabs(["Moden", "Modenfelder"])
+    with sub[0]:
+        rows = []
+        for md in modes:
+            row = {"m": md["m"], "Mode": md["k"], "λ (nm)": md["lam_nm"], "f = c/λ (THz)": md["f_THz"], "k₀ (1/µm)": md["wavenumber"] * 1e-6}
+            if ref:
+                near = min((a for a in ref if a["m"] == md["m"]), key=lambda a: abs(a["lam_nm"] - md["lam_nm"]))
+                row.update({"analytisch": f"{near['family']}{md['m']}{near['n']}{near['p']}", "λ analytisch (nm)": near["lam_nm"],
+                            "rel. Abweichung": md["lam_nm"] / near["lam_nm"] - 1.0})
+            rows.append(row)
+        df = pd.DataFrame(rows)
+        ui.show_fig(fa.fig_cavity_modes(modes, ref and [a for a in ref if a["lam_nm"] >= min(md["lam_nm"] for md in modes) * 0.97]), "hohlraum_moden.png", "ax_dl_cavmodes")
+        ui.table_show(df)
+        st.download_button("Moden (CSV)", ui.csv_bytes(df), file_name="hohlraum_moden.csv", mime="text/csv", key="ax_dl_cav_csv")
+        st.caption(f"Eigenmoden des geschlossenen Zylinders (R = {R:g} nm, h = {H:g} nm, PEC-Wand), je Azimutordnung die niedrigsten. Materialien bei {lam_ref:g} nm. "
+                   + ("Analytisch: leerer Zylinder, TM_mnp: k = √((j_mn/R)² + (pπ/h)²), TE_mnp: k = √((j′_mn/R)² + (pπ/h)²), p ≥ 1; die zugeordnete Mode ist die mit der nächsten "
+                      "Wellenlänge (bei Entartungen, z. B. TE₀₁ₚ und TM₁₁ₚ, kann der Name der Partnermode erscheinen). " if ref else
+                      "Mit Einsätzen gibt es keine geschlossene Formel; die Zuordnung zu TE/TM entfällt. ") +
+                   "Zeit je Ordnung: " + ", ".join(f"m = {p['m']}: {p['time_s']:.1f} s" for p in res["points"] if "time_s" in p) + ".")
+        for p in res["points"]:
+            if p.get("error"):
+                st.error(f"m = {p['m']}: {p['error']}")
+    with sub[1]:
+        files = sorted(view.glob("mode_*_*.npz"), key=lambda f: tuple(int(v) for v in f.stem.split("_")[1:3]))
+        if not files:
+            st.info("Keine Modenfelder gespeichert (Reiter 3: „Felder speichern“).")
+        else:
+            by = {(md["m"], md["k"]): md for md in modes}
+
+            def label(name):
+                m_, k_ = (int(v) for v in Path(name).stem.split("_")[1:3])
+                md = by.get((m_, k_), {})
+                return f"m = {m_}, Mode {k_}: λ = {md.get('lam_nm', float('nan')):.2f} nm"
+
+            field_view(view, [f.name for f in files], label, model, "ax_cav", cavity=(R, H))
+
+
+def rmodel_has_parts(model):
+    return bool(model.get("parts"))
+
+
+def field_view(view, names, label, model, key, default_log=False, cavity=None):
     c = st.columns(4)
     pick = c[0].selectbox("Feld", names, format_func=label, key=f"{key}_pick")
     q = c[1].selectbox("Größe", list(fa.AXI_QUANTITIES), key=f"{key}_q")
@@ -769,6 +882,8 @@ def field_view(view, names, label, model, key, default_log=False):
     lay = fa.layout(model)
     zoom = (lay["r_struct"] * 1.15 + 50, lay["z_struct_bottom"] - 0.15 * (lay["z_struct_top"] - lay["z_struct_bottom"]) - 50,
             lay["z_struct_top"] + 0.15 * (lay["z_struct_top"] - lay["z_struct_bottom"]) + 50) if zoom_struct else None
+    if cavity:
+        zoom = (1.04 * cavity[0], -0.04 * cavity[1], 1.04 * cavity[1])
     title = f"{q}, m = {int(d.get('m', 0))}, λ = {float(d['lam_nm']):.3f} nm" + (f", Q = {float(d['Q']):.4g}" if "Q" in d else "")
     ui.show_fig(fa.fig_axi_field(d, model, q, log=log, zoom=zoom, title=title), f"{Path(pick).stem}.png", f"{key}_dl")
     st.caption("Schnitt durch die Achse (rechts r ≥ 0 gerechnet, links gespiegelt; vorzeichenbehaftete Komponenten der Ordnung m tragen links den "
@@ -802,6 +917,10 @@ einzelne Kugel zeigt die App die Mie-Reihe zum Vergleich. Geht nur in homogener 
 
 **Modenzerlegung.** Mit der Riesz-Projektion wird das Purcell-Spektrum als Summe über die Quasi-Normalmoden geschrieben: der Beitrag der Resonanz
 (eine Lorentz-Kurve) und ein glatter Hintergrund (übrige Moden, Kontinuum).
+
+**Hohlraum.** Die Aufgabe „Hohlraum“ löst die Eigenmoden eines geschlossenen Zylinders mit idealer Leiterwand (PEC) und verlustfreier Füllung
+(hpfem: `AxisymmetricCavity`, reelles Eigenwertproblem ohne PML): je Azimutordnung m die niedrigsten Moden mit k₀, λ = 2π/k₀ und f = c/λ, dazu die Felder auf dem
+Meridianschnitt. Einsätze aus anderen Dielektrika (Teile) gehen mit. Für den leeren Zylinder zeigt die App die analytischen TM- und TE-Moden zum Vergleich.
 
 **Grenzen.** Emitter nur auf der Achse; Streuung nur ohne Substrat. Dipole in periodischen Strukturen folgen, wenn hp-FEM sie anbietet.
 """)

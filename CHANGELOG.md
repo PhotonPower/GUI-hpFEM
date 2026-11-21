@@ -2,6 +2,19 @@
 
 ## Unveröffentlicht
 
+* Neu: Modus **„Bandstruktur (photonischer Kristall)“** (Seitenleiste; hpfem 0.5, `BandStructure2D`, Floquet-Bloch): Bänder f = ω a / (2π c) eines 2D-Kristalls
+  entlang Γ–X–M–Γ (quadratisch) bzw. Γ–M–K–Γ (hexagonal), Polarisation mit E in der Ebene (H_z; die Polarisation E_z deckt der Löser nicht ab). Zelle
+  maßstabsfrei in Einheiten der Gitterkonstante, Formen (Scheibe, Rechteck, Ring, Polygon, Priorität nach Reihenfolge) werden im Gitter wiederholt (periodische
+  Ränder im Gmsh-Netz), nur reelle konstante ε. Ergebnis: Bandstrukturdiagramm mit Lücken über den ganzen Pfad (Δf/Mitte in %), optional dem leeren Gitter
+  |k + G| als Referenz, Tabellen und CSV, Modenfelder an den Eckpunkten. Der zweite Nullwert bei Γ (konstantes Feld) wird entfernt. Die Krylov-Dimension wird fest
+  gesetzt (die Automatik der Bibliothek stockt bei Γ). Vorlagen: quadratisches Stabgitter (ε = 12, r = 0,2 a; keine Lücke für E in der Ebene), leere Gitter als
+  Referenz, Dreiecksgitter aus Luftlöchern (ε = 13, r = 0,4 a). Neue Module `fem_bands.py`, `fem_bands_app.py`, `fem_bands_worker.py`.
+* Neu: Aufgabe **„Hohlraum“** im Rotationskörper-Modus (hpfem 0.5, `AxisymmetricCavity`): Eigenmoden eines geschlossenen Zylinders mit PEC-Wand (0 ≤ r ≤ R,
+  0 ≤ z ≤ h), gefüllt mit der „Umgebung“, Teile als Einsätze, verlustfrei (einachsige Kristalle mit Achse längs z, radial oder azimutal gehen). Je Azimutordnung
+  m die niedrigsten Moden: k₀, λ = 2π/k₀, f = c/λ (Tabelle, CSV, Diagramm der Frequenzen über m), Modenfelder auf dem Meridianschnitt. Für den leeren Zylinder
+  steht die analytische TM/TE-Lösung daneben. Eigenes Netz ohne PML (`fem_axi.build_cavity_mesh`), Vorlage „Zylinderhohlraum R = 1 µm, h = 1,5 µm“, Abschnitt
+  „Hohlraum“ im Reiter 1. Gemessen mit dem groben Netz der Vorlage (3 Elemente je Wellenlänge, p = 3): größte Abweichung von der analytischen Wellenlänge 7·10⁻⁴
+  über 12 Moden (m = 0, 1, 2), TM₀₁₀ auf 1·10⁻⁷.
 * Neu: **Drude-Lorentz-Materialien** und **selbstkonsistente Resonanzen**. Neuer Materialtyp „Drude-Lorentz (Fit)“ (ε∞, ħωp, ħγ und Lorentz-Oszillatoren in eV,
   `hpfem.materials.DrudeLorentz`), in allen Modi. Im Materialeditor passt „An Messdaten anpassen“ ein Drude-Lorentz-Modell an Bibliotheks-, Tabellen- und
   Drude-Materialien über einen Wellenlängenbereich an (`hpfem.materials.fit_drude_lorentz`, Vergleich Re/Im ε, größter relativer Fehler; als neues Material
