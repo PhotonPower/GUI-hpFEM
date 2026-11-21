@@ -49,6 +49,7 @@ import fem_materials as fm  # noqa: E402
 
 TAG_LEFT, TAG_RIGHT, TAG_BOTTOM, TAG_TOP = 1, 2, 3, 4                  # hpfem.box_tag X_MIN, X_MAX, Y_MIN, Y_MAX (grating.solve)
 Z0 = 376.730313668
+HBAR = 1.054571817e-34
 
 
 def say(*a):
@@ -788,6 +789,32 @@ def absorbed_exact(case, ctx, run, res):
     return dict(by_material=by, total=float(per_cell[phys].sum() / norm), total_all=float(ap.total / norm))
 
 
+def pv_profile(case, ctx, run, res, opt):
+    """Photovoltaics (hpfem.pv, post-processing only): the absorbed power per cell of the absorber material over the photon energy and the cell area
+    is the generation rate G [1/(m^3 s)]; ``hpfem.pv.depth_profile`` averages it laterally over bins along y (physical region, PML cells cut off).
+    Normalised to the incident intensity 1 W/m^2 (G / S_inc), so that fem_pv can weight the points with a spectrum. Dict for ``res["pv"]``."""
+    import hpfem.pv as pv
+
+    name = opt.get("absorber")
+    if name not in case.names:
+        raise ValueError(f"Absorber '{name}' ist kein Material des Modells")
+    ap = run.h.absorbed_power_by_tag(run.problem, run.solution)
+    per_cell = np.asarray(ap.per_cell, dtype=float)                        # W per metre of the invariant direction, 0 in lossless cells
+    mesh = run.mesh
+    V, C = np.asarray(mesh.vertices), np.asarray(mesh.cells)
+    cy = V[C][:, :, 1].mean(axis=1)
+    tags = np.array([int(mesh.cell_tag(k)) for k in range(len(C))])
+    keep = (cy > case.y_phys_bottom) & (cy < case.y_phys_top) & (tags == 1 + case.names.index(name))
+    g_cell = np.where(keep, per_cell / (HBAR * ctx.omega) / np.asarray(mesh.cell_volumes, dtype=float), 0.0)          # 1/(m^3 s) for |E_inc| = 1
+    y, g = pv.depth_profile(mesh, g_cell, axis=1, bins=int(opt.get("bins", 40)), extent=(case.y_phys_bottom, case.y_phys_top))
+    s_inc = float(res["S_inc"])
+    a_abs = float((res.get("absorbed") or {}).get("by_material", {}).get(name, 0.0))
+    dz = float(y[1] - y[0]) if len(y) > 1 else 0.0
+    photons = float(np.sum(g) * dz * HBAR * ctx.omega / s_inc)                        # should equal A_abs (lateral average over the whole period)
+    return dict(absorber=name, A_abs=a_abs, y_nm=(np.asarray(y) * 1e9).tolist(), g_per_intensity=(np.asarray(g) / s_inc).tolist(),
+                check_ratio=(photons / a_abs) if a_abs > 1e-12 else None)
+
+
 def exclusion_mask(vertices, cells, period, y_top_inner, y_bottom_inner):
     """True for cells that must not be refined: touching the periodic faces x = 0 or x = P (the two sides must stay identical) or inside a PML."""
     v, c = np.asarray(vertices), np.asarray(cells)
@@ -1066,6 +1093,11 @@ def solve_point(case, lam_nm, theta, phi, pol, order, solver, want_map=None, fir
             run = InplaneRun(case, ctx, theta, case.mesh, int(order), solver)
             res = make_result(case, ctx, run, theta, phi, pol, order)
     res["absorbed"] = absorbed_exact(case, ctx, run, res)
+    if solver.get("pv") and not res.get("isolated"):
+        try:
+            res["pv"] = pv_profile(case, ctx, run, res, solver["pv"])
+        except Exception as exc:                                    # the PV post-processing must not stop the point
+            say(f"WARN Photovoltaik-Auswertung nicht berechnet: {exc}")
     mp = field_map(case, ctx, run, res, theta, phi, pol, want_map) if want_map else None
     tri = triangulation_data(case, ctx, run, res, theta, phi, pol, want_map.get("subdivisions", 3)) if (want_map and want_map.get("triangulate")) else None
     return res, mp, hpmesh, tri
@@ -1089,7 +1121,13 @@ def resonance_point(case, lam_nm, theta, phi, solver, ro, want_map=None):
     opts = grating_options(case, ctx, solver)
     order = int(solver["order"])
     Control.last_phase = None
-    r = grating.resonances(case.mesh, {1 + i: ctx.mat[n] for i, n in enumerate(case.names)}, ctx.stack, ctx.omega, kx=kx, beta=beta,
+    selfc = bool(ro.get("selfconsistent"))
+    if selfc:                                                    # dispersive models: hpfem.grating evaluates them at the target; refine_resonance iterates
+        import fem_disp                                          # at the mode's own complex omega (Drude-Lorentz and constants analytic, tables: Re omega)
+        mats = {1 + i: fem_disp.dispersive_model(case.model["materials"][n]) for i, n in enumerate(case.names)}
+    else:
+        mats = {1 + i: ctx.mat[n] for i, n in enumerate(case.names)}
+    r = grating.resonances(case.mesh, mats, ctx.stack, ctx.omega, kx=kx, beta=beta,
                            num_modes=int(ro.get("num_modes", 6)), order=order, pml=opts["pml"], bottom=opts["bottom"],
                            pml_target=opts["pml_target"], solver=backend_enum(h, solver), krylov_dimension=int(ro.get("krylov_dimension", 0)),
                            progress=Control.progress, cancel=Control.cancelled)
@@ -1097,6 +1135,16 @@ def resonance_point(case, lam_nm, theta, phi, solver, ro, want_map=None):
     for m in r.modes:
         modes.append(dict(m=int(m.index), omega=[float(m.omega.real), float(m.omega.imag)], lam_nm=float(m.wavelength) * 1e9, Q=float(m.Q),
                           residual=float(m.residual), beta=float(m.beta)))
+    if selfc:
+        for md in modes:                                         # self-consistent resonance of each mode: Newton on lambda_hat(omega) = (omega/c0)^2
+            try:
+                rr = grating.refine_resonance(r, md["m"])
+                m0 = rr.modes[0]
+                md.update(selfconsistent=True, lam_frozen_nm=md["lam_nm"], Q_frozen=md["Q"], lam_nm=float(m0.wavelength) * 1e9, Q=float(m0.Q),
+                          omega=[float(m0.omega.real), float(m0.omega.imag)], residual=float(m0.residual), iterations=int(getattr(rr, "iterations", 0)))
+            except Exception as exc:                             # no dispersive material, no convergence: keep the frozen mode
+                md.update(selfconsistent=False, refine_error=str(exc)[:200])
+                say(f"  WARN Mode {md['m']}: keine selbstkonsistente Lösung ({str(exc)[:120]})")
     res = dict(lam_target_nm=lam_nm, theta=theta, phi=phi, kx=kx, beta=beta, kx_over_G=kx * case.P / (2 * np.pi), order=order, dofs=int(r.dofs),
                time_s=float(dict(r.timing).get("total", 0.0)), timing={k: float(v) for k, v in dict(r.timing).items()}, modes=modes,
                eps={n: [float(e.real), float(e.imag)] for n, e in ctx.eps.items()})
@@ -1301,7 +1349,7 @@ def main(argv=None) -> int:
                 return stop()
             say(f"PROGRESS {k + 1}/{len(pscan)} order p = {p}")
             try:
-                res, _, _, _ = solve_point(case, lam, th, ph, inc["pol"], p, dict(solver, engine=scan_engine, jacobian=False))
+                res, _, _, _ = solve_point(case, lam, th, ph, inc["pol"], p, dict(solver, engine=scan_engine, jacobian=False, pv=None))
                 out["pscan"].append(res)
                 if res.get("isolated"):
                     say(f"  p = {p}: {res['dofs']} DoFs, {res['time_s']:.1f} s" + (f", sigma_sca = {res['sigma_sca']:.6e} m" if res.get("sigma_sca") is not None else "")

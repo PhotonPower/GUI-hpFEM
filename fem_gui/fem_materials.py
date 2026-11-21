@@ -6,6 +6,9 @@ Ein Material ist ein JSON-fähiges Dict ("spec") mit dem Schlüssel ``type``:
 * ``index``:   ``{"type": "index", "n": 1.5, "k": 0.0}``
 * ``eps``:     ``{"type": "eps", "re": 2.25, "im": 0.0}``
 * ``drude``:   ``{"type": "drude", "eps_inf": 1.0, "omega_p_eV": 9.0, "gamma_eV": 0.07}``
+* ``drude_lorentz``: ``{"type": "drude_lorentz", "eps_inf": 1.0, "omega_p_eV": 9.0, "gamma_eV": 0.07, "osc": [[f, hbar_omega_j_eV, hbar_gamma_j_eV], ...]}``
+  (hpfem.materials.DrudeLorentz: ε = ε∞ − ωp²/(ω² + iγω) + Σ f_j ωp²/(ω_j² − ω² − iγ_j ω); analytisch in ω, also für komplexe Frequenzen
+  fortsetzbar: selbstkonsistente Resonanzen, hpfem.grating.refine_resonance)
 * ``table``:   ``{"type": "table", "rows": [[lambda_nm, n, k], ...]}`` (linear interpoliert, keine Extrapolation)
 * ``crystal``: anisotroper Kristall (hp-FEM M19, ADR-0015), konstante Hauptindizes, Tensor im Laborsystem
   (x quer zu den Linien, y längs der Linien, z die Normale nach oben):
@@ -32,6 +35,7 @@ from pathlib import Path
 import numpy as np
 
 HC_EV_NM = 1239.841984  # h*c in eV nm
+HBAR_EV_S = 6.582119569e-16  # hbar in eV s
 
 _TABULATED = ("Si", "Au", "Ag", "Al", "GaAs", "MAPbI3", "Ti", "Cr")
 # (A, B, C, lam2_numerator, (lo, hi) in um) wie in hpfem.materials
@@ -222,6 +226,8 @@ def eps_at(spec, lam_nm: float) -> complex:
     if t == "drude":
         e = HC_EV_NM / lam
         return complex(spec["eps_inf"] - spec["omega_p_eV"] ** 2 / (e**2 + 1j * spec["gamma_eV"] * e))
+    if t == "drude_lorentz":
+        return complex(dl_eps(spec, HC_EV_NM / lam))
     if t == "table":
         rows = sorted(spec["rows"])
         w, n, k = (np.array(c, dtype=float) for c in zip(*rows))
@@ -247,6 +253,25 @@ def eps_at(spec, lam_nm: float) -> complex:
     raise KeyError(f"unbekannter Materialtyp '{t}'")
 
 
+def dl_eps(spec, energy_ev):
+    """ε(ħω) des Drude-Lorentz-Materials ``spec`` für eine (auch komplexe) Photonenenergie in eV (wie hpfem.materials.DrudeLorentz)."""
+    e = np.asarray(energy_ev)
+    e = e.astype(complex) if np.iscomplexobj(e) else e.astype(float)
+    wp = float(spec["omega_p_eV"])
+    out = float(spec["eps_inf"]) - wp**2 / (e**2 + 1j * float(spec["gamma_eV"]) * e)
+    for f, ej, gj in spec.get("osc", []):
+        out = out + float(f) * wp**2 / (float(ej) ** 2 - e**2 - 1j * float(gj) * e)
+    return out
+
+
+def is_dispersive(spec) -> bool:
+    """True für Modelle, die mit der Wellenlänge variieren (alles außer konstanten Werten und Kristallen)."""
+    t = spec.get("type")
+    if t == "library":
+        return spec.get("name") not in _CONSTANT
+    return t in ("drude", "drude_lorentz", "table")
+
+
 def nk(spec, lam_nm: float):
     """(n, k) mit n + ik = sqrt(ε), k ≥ 0."""
     r = np.sqrt(eps_at(spec, lam_nm) + 0j)
@@ -265,6 +290,9 @@ def describe(spec) -> str:
         return f"ε = {spec['re']:g} {spec['im']:+g} i"
     if t == "drude":
         return f"Drude (ε∞ = {spec['eps_inf']:g}, ħωp = {spec['omega_p_eV']:g} eV, ħγ = {spec['gamma_eV']:g} eV)"
+    if t == "drude_lorentz":
+        return (f"Drude-Lorentz (ε∞ = {spec['eps_inf']:g}, ħωp = {spec['omega_p_eV']:g} eV, ħγ = {spec['gamma_eV']:g} eV, "
+                f"{len(spec.get('osc', []))} Oszillator(en))")
     if t == "table":
         return f"Tabelle ({len(spec['rows'])} Zeilen)"
     if t == "crystal":

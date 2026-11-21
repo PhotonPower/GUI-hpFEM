@@ -73,7 +73,7 @@ def render_waveguide(ctx):
         st.warning("Das eingestellte Python hat kein hpfem mit Ports und PropagatingMode. Anzeigen geht trotzdem.")
     t1, t2, t3, t4 = st.tabs(["1 Modell", "2 Rechnung", "3 Ergebnisse", "4 Info"])
     with t1:
-        _tab_model()
+        _tab_model(ctx)
     with t2:
         _tab_run(ctx, work)
     with t3:
@@ -138,7 +138,7 @@ def _shape_editor(m, i, s, names, ver):
             st.error("Die Punkte als „x, y“ eingeben.")
 
 
-def _tab_model():
+def _tab_model(ctx):
     m, ver = S.wg_model, S.wg_ver
     left, right = st.columns([6, 5])
     with left:
@@ -154,7 +154,8 @@ def _tab_model():
                              horizontal=True)
         st.subheader("Materialien")
         lam0 = fw.sweep_list(m["sweep"])[0]
-        ui.material_editor(m, ver, lam0, fw.used_materials(m), _rename, _bump, prefix="wg_")
+        ui.material_editor(m, ver, lam0, fw.used_materials(m), _rename, _bump, prefix="wg_",
+                           fit=None if ctx["lib"].get("error") else (lambda sp, lo, hi, n: fr.fit_material(ctx["py"], ctx["repo"], sp, lo, hi, n)))
         names = list(m["materials"])
         st.subheader("Gebiet")
         c = st.columns(3)

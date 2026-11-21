@@ -746,7 +746,8 @@ def resonances_dataframe(points):
         for m in p.get("modes", []):
             rows.append({"Nr": p["index"], "θ (°)": p["theta"], "φ (°)": p["phi"], "kx·P/2π": p["kx_over_G"], "Mode": m["m"], "λ_res (nm)": m["lam_nm"],
                          "Q": m["Q"], "Re ω (1/s)": m["omega"][0], "Im ω (1/s)": m["omega"][1], "Residuum": m["residual"],
-                         "Freiheitsgrade": p["dofs"], "Zeit (s)": p["time_s"]})
+                         "Freiheitsgrade": p["dofs"], "Zeit (s)": p["time_s"], **({"λ_eingefroren (nm)": m["lam_frozen_nm"], "Q_eingefroren": m["Q_frozen"]}
+                                                                              if m.get("selfconsistent") else {})})
     return pd.DataFrame(rows)
 
 

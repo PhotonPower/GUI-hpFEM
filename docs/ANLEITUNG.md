@@ -258,12 +258,34 @@ Polarisation und Ordnungen), nicht im Modell der anderen Modi. Das Netz wird fü
 Die Vorlagen sind mit der Bibliothek durchgerechnet: die Rekonstruktion findet aus synthetischen Daten (Breite 210 nm, ε 2,3, Rauschen 0,002)
 210,5 ± 3,6 nm und 2,303 ± 0,014.
 
+## Photovoltaik (Reiter 3 → Expander „Photovoltaik“, Reiter 4 → „Photovoltaik“)
+Für Streuung im periodischen Modus (nicht isoliert, Löser mit exakter Absorption). Im Reiter 3 „Generationsrate im Absorber berechnen“ einschalten, den
+Absorber wählen (das Material, dessen Absorption Ladungsträger erzeugt) und die Stützstellen des Tiefenprofils. Jeder Punkt liefert dann zusätzlich die
+Generationsrate G = absorbierte Leistung der Zelle / (ħω · Zellfläche) im Absorber, seitlich über die Periode gemittelt als Profil G(y) für die einfallende
+Intensität 1 W/m² (ohne PML; kein zusätzlicher Lösungsschritt). Unter den Ergebnissen gewichtet der Unterreiter „Photovoltaik“ die Punkte eines
+Wellenlängendurchlaufs mit einem Spektrum: Schwarzkörper 5778 K (auf 1000 W/m² über 280–4000 nm skaliert, eine Näherung ohne Absorptionslinien) oder ein eigenes
+CSV (`λ [nm]; Irradianz [W/(m² nm)]`, z. B. das Normspektrum AM1.5; es ist keines eingebaut). Ausgabe: J_sc = q Σ A_Absorber Φ (Φ = I λ/(h c), Bandbreiten aus den
+Mittelpunkten der Punkte; jedes absorbierte Photon erzeugt ein Paar, alle werden gesammelt: obere Grenze, keine Ladungsträgersimulation), der Wert bei A = 1 im
+gleichen Bereich, die Absorption über λ, das spektral gewichtete G(y) und beides als CSV. Der Durchlauf sollte das Spektrum dicht genug abdecken (die
+Wellenlängen außerhalb des Spektrums tragen nichts bei, die Randbänder bekommen den vollen Punktabstand wie in `hpfem.pv.spectral_weights`).
+
 ## Ableitungen (Reiter 3 → Reiter 4 „Ableitungen“)
 Mit dem Löser „hpfem.grating“ und „Ableitungen berechnen“ berechnet die Bibliothek (`hpfem.grating.jacobian`, M16) die Jacobi-Matrix aller
 Beugungseffizienzen nach Re ε und Im ε jedes Materials in der Zelle (Formen und Schichten, nicht Einfallsmedium und Substrat), nach der Wellenlänge
 (je nm, bei festem ε), nach θ und bei vektorieller Rechnung nach φ (je Grad). Das kostet einen zusätzlichen Lösungsschritt auf der behaltenen
 Faktorisierung, aber keine weitere Rechnung. Der Reiter zeigt dR/dp und dT/dp der Summen (Balken bei einem Punkt, Kurven über einem Durchlauf) und die
 ganze Matrix als Tabelle und CSV. Anwendung: Toleranzen (ΔR ≈ Σ dR/dp · Δp), Empfindlichkeit auf Materialdaten, Startwerte für Fits und Optimierung.
+
+## Dispersive Materialien: Drude-Lorentz-Anpassung
+Der Materialtyp „Drude-Lorentz (Fit)“ beschreibt ε(ω) = ε∞ − ωp²/(ω² + iγω) + Σ f_j ωp²/(ω_j² − ω² − iγ_j ω) mit Energien in eV (Konvention exp(−iωt), Verlust
+Im ε > 0). Im Materialeditor eines Bibliotheks-, Tabellen- oder Drude-Materials öffnet „An Messdaten anpassen (Drude-Lorentz)“ die Anpassung: Wellenlängenbereich
+und Zahl der Oszillatoren wählen, „Anpassen“ rechnet im Python mit hpfem (einige Sekunden), das Diagramm zeigt Daten und Fit, darunter steht der größte relative
+Fehler von ε auf den Stützstellen. Die Anpassung ist nur im gewählten Bereich brauchbar; mehr Oszillatoren passen enger an, können aber überanpassen. Der
+Hauptnutzen ist die Aufgabe „Resonanzen“ mit dem Haken „Dispersion selbstkonsistent“: Ohne ihn wertet hpfem ε bei der Zielwellenlänge aus und friert es ein, mit
+ihm wird jede Mode nachgeführt (ε bei der komplexen Eigenfrequenz der Mode, Newton-Verfahren). Das verschiebt λ_res und Q bei Metallen und nahe Absorptionskanten
+merklich; die Tabelle zeigt beide Werte. Tabellen werden dabei bei Re ω ausgewertet (nicht analytisch fortgesetzt), ein Drude-Lorentz-Material ist genauer. Kann eine
+Mode nicht nachgeführt werden, bleibt die eingefrorene stehen und das Protokoll meldet eine Warnung. Verkippte optische Achsen von Kristallen gibt es im periodischen
+Modus schon (Kristallmaterial: einachsig mit θ, φ, zweiachsig mit Euler-Winkeln, voller Tensor).
 
 ## Resonanzen und Bänder (Reiter 3, Aufgabe „Resonanzen“)
 `hpfem.grating.resonances` sucht die Eigenmoden der offenen Zelle (PML oben und unten, Bloch-periodisch) nahe der Wellenlänge der Beleuchtung, bei der
