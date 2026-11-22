@@ -38,17 +38,27 @@ def tab_model(m, ver, bump, ctx, work):
             c = st.columns(3)
             m["width_nm"] = _num(c[0], "Kernbreite (nm)", f"p3_w_{ver}", m["width_nm"], 10.0, 20.0, 5000.0)
             m["height_nm"] = _num(c[1], "Kernhöhe (nm)", f"p3_h_{ver}", m["height_nm"], 10.0, 20.0, 5000.0)
-            m["length_nm"] = _num(c[2], "Länge (nm)", f"p3_l_{ver}", m["length_nm"], 100.0, 100.0, 200000.0, "Länge des Bauteils zwischen den Ports (z).")
+            if m["device"] == "ring":
+                r = m["ring"]
+                r["radius_nm"] = _num(c[2], "Ringradius, Mittellinie (nm)", f"p3_rr_{ver}", r["radius_nm"], 50.0, 300.0, 50000.0, "Radius der Mittellinie des Rings; die Zuleitungen liegen bei y = ±(R + Breite + Spalt).")
+                m["gap_nm"] = _num(st, "Spalt Ring–Zuleitung (nm)", f"p3_g_{ver}", m["gap_nm"], 10.0, 10.0, 5000.0, "Mantel zwischen Ring und jeder der beiden Zuleitungen.")
+                c = st.columns(3)
+                r["margin_x_nm"] = _num(c[0], "Rand längs der Zuleitungen (nm)", f"p3_rmx_{ver}", r["margin_x_nm"], 50.0, 100.0, 20000.0, "Mantel hinter dem Ring bis zu den Port-Flächen (x).")
+                r["margin_y_nm"] = _num(c[1], "Rand neben den Zuleitungen (nm)", f"p3_rmy_{ver}", r["margin_y_nm"], 50.0, 100.0, 20000.0, "Mantel außerhalb der äußeren Zuleitungskanten bis zur PEC-Wand (y).")
+                r["margin_z_nm"] = _num(c[2], "Rand oben und unten (nm)", f"p3_rmz_{ver}", r["margin_z_nm"], 50.0, 100.0, 20000.0, "Mantel unter und über den Kernen bis zur PEC-Wand (z).")
+            else:
+                m["length_nm"] = _num(c[2], "Länge (nm)", f"p3_l_{ver}", m["length_nm"], 100.0, 100.0, 200000.0, "Länge des Bauteils zwischen den Ports (z).")
             if m["device"] == "coupler":
                 c = st.columns(2)
                 m["gap_nm"] = _num(c[0], "Spalt zwischen den Kernen (nm)", f"p3_g_{ver}", m["gap_nm"], 10.0, 10.0, 5000.0)
                 m["ports"] = c[1].radio("Ports", list(fp.PORT_STYLES), index=list(fp.PORT_STYLES).index(m["ports"]), format_func=lambda k: fp.PORT_STYLES[k].split(" (")[0],
                                         key=f"p3_pst_{ver}", help="Halbflächen: " + fp.PORT_STYLES["half"] + ". Supermoden: " + fp.PORT_STYLES["full"] + ".")
-            c = st.columns(2)
-            m["margin_x_nm"] = _num(c[0], "Rand seitlich (nm)", f"p3_mx_{ver}", m["margin_x_nm"], 50.0, 50.0, 20000.0, "Mantel neben den Kernen bis zur PEC-Wand (x).")
-            m["margin_y_nm"] = _num(c[1], "Rand oben und unten (nm)", f"p3_my_{ver}", m["margin_y_nm"], 50.0, 50.0, 20000.0, "Mantel unter und über den Kernen bis zur PEC-Wand (y).")
+            if m["device"] != "ring":
+                c = st.columns(2)
+                m["margin_x_nm"] = _num(c[0], "Rand seitlich (nm)", f"p3_mx_{ver}", m["margin_x_nm"], 50.0, 50.0, 20000.0, "Mantel neben den Kernen bis zur PEC-Wand (x).")
+                m["margin_y_nm"] = _num(c[1], "Rand oben und unten (nm)", f"p3_my_{ver}", m["margin_y_nm"], 50.0, 50.0, 20000.0, "Mantel unter und über den Kernen bis zur PEC-Wand (y).")
             st.subheader("Materialien")
-            lam0 = fp.wavelengths(m)[0]
+            lam0 = fp.lam_ref(m)
             ui.material_editor(m, ver, lam0, {m["core"], m["clad"]}, _rename, bump, prefix="p3_")
             names = list(m["materials"])
             c = st.columns(2)
@@ -59,7 +69,13 @@ def tab_model(m, ver, bump, ctx, work):
     with right:
         for lvl, text in fp.validate(m):
             (st.error if lvl == "error" else st.warning)(text)
-        if m["device"] == "file":
+        if m["device"] == "ring":
+            st.markdown("**Aufbau.** Add-Drop-Filter der integrierten Photonik: ein Ring zwischen zwei geraden Zuleitungen gleichen Querschnitts (x längs der Zuleitungen, y quer, z nach oben), "
+                        "Mantel zwischen idealen Leiterwänden (PEC), Gmsh-Netz mit gekrümmten Tetraedern, vier modale Ports (1 Eingang, 2 Through, 3 Drop, 4 Add). Angeregt wird Port 1. "
+                        "Das halbe Modell (z ≥ h/2, magnetische Spiegelebene) spart etwa ein Drittel der Unbekannten; die S-Parameter sind die des ganzen Bauteils.")
+            st.caption("Referenz: der isolierte Ring als Rotationskörper (`AxisymmetricCavity`) liefert λ der Grundmode je Azimutordnung m (Bibliothek: für R = 2 µm m = 19 bei 1557,39 nm); aus Through und Drop wird "
+                       "der gemeinsame komplexe Pol (Resonanz, Halbwertsbreite, Güte) angepasst. FSR-Schätzung: λ²/(n_g·2πR) aus dem Gruppenindex der geraden Zuleitung.")
+        elif m["device"] == "file":
             st.markdown("**Aufbau.** Ein Gmsh-Netz (Version 4.1, ASCII) mit physikalischen Volumina (Materialien) und Flächen (PEC-Wände, Ports), z. B. der Ringresonator der Bibliothek "
                         "(`examples/ring_resonator_3d/ring_mesh.py`). Die Ports sind Flächenmarken; jeder Port löst seine Moden mit dem 2D-Modenlöser.")
         else:
@@ -128,6 +144,8 @@ def _file_editor(m, ver, bump, ctx, work):
 
 def tab_params(m, ver):
     """Wavelengths, mesh and order of the ports model."""
+    if m["device"] == "ring":
+        return _ring_params(m, ver)
     st.subheader("Wellenlängen")
     s = m["sweep"]
     c = st.columns(3)
@@ -151,7 +169,96 @@ def tab_params(m, ver):
         st.caption(f"Etwa {n} Würfelzellen, das sind rund {6 * n} Tetraeder; die genaue Zahl und der Speicher stehen nach „Netz prüfen“.")
 
 
+def _ring_params(m, ver):
+    r = m["ring"]
+    st.subheader("Wellenlängen")
+    r["scan"] = st.radio("Durchlauf", ["manual", "auto"], index=["manual", "auto"].index(r["scan"]), horizontal=True, key=f"p3_rsc_{ver}",
+                         format_func={"manual": "feste Wellenlängen (von, bis, Zahl)", "auto": "automatisch: Suche um die Resonanz des isolierten Rings, dann feiner um den angepassten Pol"}.get)
+    if r["scan"] == "auto":
+        c = st.columns(2)
+        r["target_nm"] = _num(c[0], "Zielwellenlänge (nm)", f"p3_rtg_{ver}", r["target_nm"], 10.0, 400.0, 20000.0, "Daraus werden die Azimutordnung und die nächste Resonanz des isolierten Rings bestimmt; das Material ist hier eingefroren.")
+        r["search_nm"] = _num(c[1], "Suchfenster ± (nm)", f"p3_rse_{ver}", r["search_nm"], 0.5, 0.1, 100.0, "Neun Wellenlängen im Fenster um die Referenzresonanz, danach neun innerhalb ±2 Halbwertsbreiten des angepassten Pols (18 Läufe).")
+    else:
+        s = m["sweep"]
+        c = st.columns(3)
+        s["start"] = _num(c[0], "von (nm)", f"p3_s0_{ver}", s["start"], 10.0, 200.0, 20000.0)
+        s["stop"] = _num(c[1], "bis (nm)", f"p3_s1_{ver}", s["stop"], 10.0, 200.0, 20000.0)
+        s["count"] = int(c[2].number_input("Zahl der Wellenlängen", 1, 200, int(s["count"]), key=f"p3_sn_{ver}", help="Jede Wellenlänge ist eine eigene Faktorisierung (die Matrix hängt von ω ab, kein Wiederverwenden möglich)."))
+    st.subheader("Netz und Ordnung")
+    c = st.columns(4)
+    r["cell_core_nm"] = _num(c[0], "Zelle am Kern (nm)", f"p3_rcc_{ver}", r["cell_core_nm"], 10.0, 30.0, 1000.0, "Zielgröße der Tetraeder in und an den Kernen (Bibliothek: 100 nm, Test: 150 nm).")
+    r["cell_far_nm"] = _num(c[1], "Zelle fern (nm)", f"p3_rcf_{ver}", r["cell_far_nm"], 10.0, 50.0, 2000.0, "Zielgröße im Mantel im Staffelabstand vom Kern.")
+    r["grade_nm"] = _num(c[2], "Staffelweg (nm)", f"p3_rgr_{ver}", r["grade_nm"], 50.0, 100.0, 5000.0, "Abstand vom Kern, in dem die Zellgröße von „am Kern“ auf „fern“ wächst.")
+    r["half"] = c[3].checkbox("Halbes Modell", value=bool(r["half"]), key=f"p3_rhf_{ver}", help="Nur z ≥ h/2 vernetzen, die Mittelebene der Kerne ist eine magnetische Wand (TE-ähnliche Moden: E tangential gerade). "
+                                                                                           "Spart etwa ein Drittel der Unbekannten und mehr Speicher; die S-Parameter sind die des ganzen Bauteils.")
+    c = st.columns(4)
+    r["order_core"] = int(c[0].number_input("Ordnung p am Kern", 1, 5, int(r["order_core"]), key=f"p3_roc_{ver}", help="Zellen innerhalb der Reichweite vom Kern bekommen diese Ordnung."))
+    r["order_far"] = int(c[1].number_input("Ordnung p fern", 1, 5, int(r["order_far"]), key=f"p3_rof_{ver}"))
+    r["reach_nm"] = _num(c[2], "Reichweite Kernordnung (nm)", f"p3_rre_{ver}", r["reach_nm"], 25.0, 0.0, 2000.0, "Abstand vom Kern (Zellschwerpunkte), bis zu dem die höhere Ordnung gilt (Bibliothek: 250 nm).")
+    backs = ["auto", "sparselu", "mumps", "cudss"]
+    r["backend"] = c[3].selectbox("Löser", backs, index=backs.index(r["backend"]), key=f"p3_rbk_{ver}",
+                                  help="Direkter Löser. Das Wheel enthält nur SparseLU; MUMPS und cuDSS nur, wenn die Bibliothek damit gebaut ist (sonst bricht der Worker mit einer klaren Meldung ab).")
+    st.subheader("Referenz und Felder")
+    c = st.columns(4)
+    r["reference"] = c[0].checkbox("Referenz und FSR", value=bool(r["reference"]), key=f"p3_rrf_{ver}", help="Isolierter Ring als Rotationskörper (λ der Grundmode für die Azimutordnungen m0−1, m0, m0+1) "
+                                                                                                         "und Gruppenindex der Zuleitung aus dem 2D-Modenlöser (drei Wellenlängen).")
+    r["ref_p"] = int(c[1].number_input("Ordnung der Referenz", 1, 6, int(r["ref_p"]), key=f"p3_rrp_{ver}", help="Bibliothek: p = 4 auf 50-nm-Zellen (0,01 nm); p = 2 auf 100-nm-Zellen weicht etwa 0,7 nm ab."))
+    r["ref_cell_nm"] = _num(c[2], "Zelle der Referenz (nm)", f"p3_rrc_{ver}", r["ref_cell_nm"], 10.0, 20.0, 400.0)
+    r["field_res"] = c[3].checkbox("Feld beim stärksten Drop", value=bool(r["field_res"]), key=f"p3_rfl_{ver}", help="Eine zusätzliche Lösung bei der Wellenlänge mit dem größten Drop: |E|² in der x–y-Ebene durch die Kernmitte.")
+    st.caption("Maße der Bibliothek: Produktionsnetz 100 nm, p = 3/2: 0,36 bis 1,7 Millionen Unbekannte (MUMPS, Server); das Testnetz (R = 1,5 µm, 150 nm, p = 1) hat rund 17 000 Unbekannte im halben Modell "
+               "und braucht je Wellenlänge einige Sekunden. Die genaue Zahl und der Speicher stehen nach „Netz prüfen“.")
+
+
 # ===================================================================================================================== results
+def _results_ring(res, work, model, ok):
+    meta, ring, m = res["meta"], res.get("ring") or {}, model["p3"]
+    sub = st.tabs(["Spektrum und Resonanz", "S-Matrix", "Feld", "Tabelle"])
+    with sub[0]:
+        ui.show_fig(fp.fig_ring(ok, ring), "ringspektrum.png", "p3_dl_ring")
+        c = st.columns([3, 2])
+        with c[1]:
+            tab = fp.ring_summary_dataframe(ring)
+            if len(tab):
+                ui.table_show(tab)
+        with c[0]:
+            worst = max(abs(p["loss"]) for p in ok)
+            notes = [f"Leistungsbilanz: |Σ Port-Leistungen − 1| ≤ {worst:.1e} (verlustfreie Materialien: der Fehler der Portnormierung, nicht des Netzes)."]
+            f = ring.get("fit")
+            if f is None:
+                notes.append("Keine Resonanz angepasst: dafür braucht es mindestens vier Wellenlängen, und der gemeinsame Pol von Through und Drop muss im Fenster liegen.")
+            if f and ring.get("lam_ref_nm"):
+                notes.append(f"Die 3D-Resonanz liegt {f['wavelength'] - ring['lam_ref_nm']:+.2f} nm neben der des isolierten Rings (Kopplung an die Zuleitungen und Diskretisierung).")
+            if ring.get("fsr_ref_nm") and ring.get("fsr_ng_nm"):
+                ratio = ring["fsr_ng_nm"] / ring["fsr_ref_nm"]
+                notes.append(f"FSR: isolierter Ring {ring['fsr_ref_nm']:.1f} nm, λ²/(n_g·L) der geraden Zuleitung {ring['fsr_ng_nm']:.1f} nm (Verhältnis {ratio:.2f}). Für R = 2 µm nennt die Bibliothek 45 bis 48 nm "
+                             "für den isolierten Ring; bei kleinem Radius kann die Schätzung stark abweichen (R = 1,5 µm: 62 gegen 85 nm; vermutlich, weil die Mode im Bogen nach außen rückt, nicht geprüft).")
+            if f and f["residual"] > 0.05:
+                notes.append(f"Der Rest der Anpassung ist groß ({f['residual']:.2f}): das Spektrum im Fenster wird nicht von einem einzelnen Pol beschrieben (Scheinresonanzen bei zu grobem Netz, mehrere Resonanzen im Fenster); "
+                             "Lage, Breite und Güte sind dann nicht belastbar.")
+            if int(m["ring"]["order_core"]) == 1:
+                notes.append("p = 1: das Netz löst den Resonator nicht auf; Spitzen im Spektrum können Scheinresonanzen sein (Bibliothek: alle paar Nanometer, Rückreflexion bis 0,47).")
+            st.caption(" ".join(notes))
+    with sub[1]:
+        i = st.selectbox("Wellenlänge", range(len(ok)), format_func=lambda i: f"{ok[i]['lam_nm']:.4f} nm", key="p3_ring_lam") if len(ok) > 1 else 0
+        ui.table_show(fp.s_matrix_dataframe(ok[i]).round(6))
+        st.caption("Anregung: Port 1 (Grundmode). |S|² sind Leistungsanteile; die Phase ist die der leistungsnormierten Amplitude gegen die einlaufende Welle.")
+    with sub[2]:
+        withf = [p for p in ok if p.get("field_file")]
+        if not withf:
+            st.info("Kein Feld gespeichert (Reiter 2: „Feld beim stärksten Drop“).")
+        else:
+            npz = np.load(Path(work) / withf[0]["field_file"])
+            ui.show_fig(fp.fig_ring_field(npz, m, f"|E|² in der Kernmitte, λ = {withf[0]['lam_nm']:.4f} nm, Anregung an Port 1"), "ringfeld.png", "p3_dl_ringfld")
+            st.caption("Beim halben Modell: 10 nm über der Mittelebene. Weiß gestrichelt: Kanten von Ring und Zuleitungen. Skala beliebig.")
+    with sub[3]:
+        df = fp.results_dataframe(ok, meta.get("device"), "")
+        c = st.columns(3)
+        c[0].download_button("Tabelle (CSV)", ui.csv_bytes(df), file_name="ringresonator_3d.csv", mime="text/csv", key="p3_dl_rcsv")
+        c[1].download_button("Resonanz (CSV)", ui.csv_bytes(fp.ring_summary_dataframe(ring)), file_name="ringresonanz.csv", mime="text/csv", key="p3_dl_rres")
+        c[2].download_button("Modell (JSON)", json.dumps(m, indent=1, ensure_ascii=False).encode("utf-8"), file_name="ringresonator_3d.json", mime="application/json", key="p3_dl_rmodel")
+        ui.table_show(df.round(6))
+
+
 def results(res, work, model):
     pts = res["points"]
     meta = res["meta"]
@@ -162,6 +269,8 @@ def results(res, work, model):
     if not ok:
         return
     m = model["p3"]
+    if meta.get("device") == "ring":
+        return _results_ring(res, work, model, ok)
     sub = st.tabs(["Transmission", "S-Matrix", "Felder", "Tabelle"])
     with sub[0]:
         if len(ok) > 1:

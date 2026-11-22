@@ -76,7 +76,7 @@ Netz mit den Ordnungen. η fällt mit den Schritten, aber Q_sca konvergiert bei 
 z = 0 und z = L; strukturiertes Tetraedernetz mit Gitterlinien auf den Kernkanten. Ergebnis: leistungsnormierte S-Matrix aller Kanäle, Reflexion, Transmission, Verlust, n_eff der Portmoden, |E|² im Längs- und
 Querschnitt. Referenzen: Streifen: β der Grundmode des Querschnitts (2D-Modenlöser) und seine Phase gegen die der Transmission; Koppler: Theorie gekoppelter Moden P_cross = sin²(κL) mit κ aus den Supermoden
 (gleiches Netz und ein feineres Referenznetz mit p + 2 und halber Zelle: der Unterschied zeigt den Diskretisierungsfehler). Eigene Gmsh-Datei: Flächenmarken werden als PEC-Wand oder Port (mit Modenzahl) zugewiesen,
-z. B. der Ringresonator `examples/ring_resonator_3d/ring_mesh.py` der Bibliothek. **3D-Wellenleiter sind teuer**: n_eff des 450 × 220 nm Si/SiO₂-Streifens ist mit p = 1 und 150-nm-Zellen um
+z. B. das Ringnetz der Bibliothek. **Ringresonator** (Bauteil „Ringresonator (Add-Drop, Gmsh)“): Ring zwischen zwei Zuleitungen (Gmsh-Netz, `examples/ring_resonator_3d`), vier Ports, Anregung an Port 1; Through, Drop, Add, Reflexion über der Wellenlänge, Resonanz als komplexer Pol, Referenz des isolierten Rings (`AxisymmetricCavity`) und FSR-Schätzung aus dem Gruppenindex; die Test-Vorlage (p = 1) prüft nur die Rechenkette, die Produktionsnetze (0,4 bis 1,7 Millionen Unbekannte) brauchen MUMPS und sehr viel Speicher. **3D-Wellenleiter sind teuer**: n_eff des 450 × 220 nm Si/SiO₂-Streifens ist mit p = 1 und 150-nm-Zellen um
 9 % zu klein (2,14 gegen etwa 2,36), mit p = 2 und 75-nm-Zellen konvergiert es, kostet aber Minuten und Gigabyte; die Phase der Transmission läuft mit der Länge davon.
 """
 
@@ -107,7 +107,7 @@ def render_threed(ctx):
     elif not (ctx["FEATS"].get("threed_ext") or ctx["lib"].get("error")):
         st.warning("Dem hpfem fehlen Schichtstapel, hp-Adaptivität oder Ports in 3D (ältere Version): diese Aufgaben schlagen im Worker fehl.")
     if ctx["FEATS"].get("gmsh") is False and not ctx["lib"].get("error"):
-        st.warning("Im hpfem-Python fehlt das Modul `gmsh` (pip install gmsh): Gmsh-Geometrien gehen nicht; Bibliotheksnetze, hochgeladene .msh-Dateien und Wellenleiter schon.")
+        st.warning("Im hpfem-Python fehlt das Modul `gmsh` (pip install gmsh): Gmsh-Geometrien und der Ringresonator gehen nicht; Bibliotheksnetze, hochgeladene .msh-Dateien und Streifen/Koppler schon.")
     t1, t2, t3, t4 = st.tabs(["1 Modell", "2 Rechnung", "3 Ergebnisse", "4 Info"])
     with t1:
         _tab_model(ctx, work)

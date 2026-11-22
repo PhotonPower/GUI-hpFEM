@@ -265,10 +265,26 @@ nach Ordnung gefärbt. η fällt, Q_sca konvergiert bei grobem PML nicht monoton
 (dispersiv auswertbar), beim Koppler Spalt und Portart (vier Halbflächen-Ports oder ein Port mit zwei Moden je Stirnfläche); Reiter 2: Wellenlängen, Zelle (und Zelle längs z, gröber spart viel), Ordnung,
 Anregung (Port und Mode), Feld der Anregung. Ergebnis: Transmission, Reflexion, Verlust (Leistungsbilanz, Fehler der Portnormierung), S-Matrix (|S|², Spalte = Anregung), n_eff der Portmoden mit feiner 2D-Referenz,
 beim Koppler cross, bar, Kopplungslänge nach der Theorie gekoppelter Moden (Netz der Rechnung und feines Referenznetz) sowie |E|² im Längs- und Querschnitt. Eigene Datei: Flächenmarken als PEC-Wand oder Port
-(mit Modenzahl) zuweisen (z. B. der Ringresonator `examples/ring_resonator_3d/ring_mesh.py` der Bibliothek, dort jeweils Port 11 und 12).
+(mit Modenzahl) zuweisen (z. B. das Ringnetz von `examples/ring_resonator_3d/ring_mesh.py`; den Ring selbst baut das Bauteil „Ringresonator“, siehe unten).
 **Grenzen:** 3D-Wellenleiter sind teuer. n_eff des 450 × 220 nm Si/SiO₂-Streifens ist mit p = 1 und 150-nm-Zellen um 9 % zu klein (2,14 gegen 2,36); mit p = 2 und 10 000 Unbekannten dauert die Rechnung 3 Minuten.
 Ein Richtkoppler mit p = 1 und 150-nm-Zellen koppelt viel zu stark (Kopplungslänge 10 µm gegen 25 µm auf dem feinen Netz), cross ist bei kurzen Kopplern sehr empfindlich auf den Phasenfehler. Die Vorlagen
 zeigen also die Mechanik, keine konvergierten Bauteile; Netz und Ordnung muss man prüfen (die Tabelle zeigt dafür die Referenzen). Halbflächen-Ports verfälschen cross zusätzlich um einige Prozent.
+
+**Ringresonator (Bauteil „Ringresonator (Add-Drop, Gmsh)“):** Add-Drop-Filter nach `examples/ring_resonator_3d` der Bibliothek: ein Ring zwischen zwei geraden Zuleitungen gleichen Querschnitts, vier Ports
+(1 Eingang, 2 Through, 3 Drop, 4 Add), Anregung an Port 1. Reiter 1: Kernbreite und -höhe, Ringradius (Mittellinie), Spalt, Ränder (längs der Zuleitungen, neben den Zuleitungen, oben und unten),
+Materialien Kern/Mantel. Reiter 2: Durchlauf **fest** (von, bis, Zahl) oder **automatisch** (Zielwellenlänge; neun Wellenlängen im Suchfenster um die Resonanz des isolierten Rings, dann neun innerhalb ±2
+Halbwertsbreiten des angepassten Pols; das Material ist dabei bei der Zielwellenlänge eingefroren), Zelle am Kern und fern, Staffelweg, **halbes Modell** (spart etwa ein Drittel der Unbekannten, die Mittelebene
+z = h/2 ist eine magnetische Wand, die S-Parameter sind die des ganzen Bauteils), Ordnung p am Kern und fern mit Reichweite, Löser, Referenz und FSR, Feld beim stärksten Drop. Vor „Rechnen“ unbedingt
+„Netz prüfen und Speicher schätzen“: das Netz wird mit Gmsh erzeugt (einige Sekunden), die Schätzung der Bibliothek steht daneben (Speicher, Zeitrichtwert, Warnung bei über 60 % des freien Speichers, harte Grenze).
+Ergebnis: Spektrum von Through, Drop, Add und Reflexion mit der angepassten Resonanz (strichpunktiert) und der des isolierten Rings (gepunktet); Tabelle mit Lage, Halbwertsbreite, belasteter Güte, größtem
+Drop, kleinstem Through, Rest der Anpassung, Referenz-λ, FSR aus dem isolierten Ring und FSR = λ²/(n_g·2πR) aus dem Gruppenindex der geraden Zuleitung; S-Matrix der Anregung (|S|², Phase); |E|² in der Kernmitte; CSV.
+Die Resonanz ist der gemeinsame komplexe Pol von Through und Drop (kleinste Quadrate, mindestens vier Wellenlängen; bei großem Rest der Anpassung warnt die Seite).
+**Vorlagen:** „Test“ (R = 1,5 µm, 150-nm-Zellen, p = 1, halbes Modell: etwa 17 000 Unbekannte, 0,4 GB, einige Sekunden je Wellenlänge) prüft nur die Rechenkette; mit p = 1 ist der Resonator nicht aufgelöst
+(Bibliothek: n_eff 7 % zu klein, Scheinresonanzen alle paar Nanometer). „mittel“ (R = 2 µm, p = 2 am Kern): rund 80 000 Unbekannte, nach der Schätzung 7,8 GB mit SparseLU, 18 Wellenlängen bei einem Thread
+sind viel Zeit (nicht gelaufen). „Bibliotheksbeispiel“ (100-nm-Zellen, p = 3/2): 0,4 bis 1,7 Millionen Unbekannte; die Bibliothek rechnet das mit MUMPS auf einem Server, das Wheel hat nur SparseLU
+(nicht gelaufen). **Grenzen:** das 3D-Spektrum und die Güte sind hier nicht gegen die Bibliothek validiert; jede Wellenlänge ist eine volle Lösung (keine Faktorisierung wird geteilt, weil die Matrix von ω abhängt);
+bei kleinem Radius weicht die FSR-Schätzung aus der geraden Zuleitung stark vom isolierten Ring ab (R = 1,5 µm: 62 gegen 85 nm), für R = 2 µm nennt die Bibliothek 45 bis 48 nm, die Schätzung aus n_g = 4,15 ergibt rechnerisch 46,5 nm (hier nicht nachgerechnet); die Referenz nimmt
+die tiefste Mode je Azimutordnung als die TE-ähnliche Grundmode; verlustfreie Materialien und PEC-Wände: Energiebilanz Σ|S|² = 1 prüft die Portnormierung, nicht das Netz.
 
 ## Wellenleiter und Ports (Seitenleiste „Art des Modells“ → „Wellenleiter und Ports“)
 
