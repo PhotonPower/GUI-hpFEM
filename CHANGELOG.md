@@ -2,6 +2,22 @@
 
 ## Unveröffentlicht
 
+* Neu: **Wärme und Mechanik in 3D** (Modus „Wärme und Mechanik“, Schalter „Raumdimension“ 2D/3D; hpfem 0.5, `Scattering3D`, `Thermal3D`, `ThermoOptical3D`, `Elasticity3D`).
+  Fall **Kugel**: ebene Welle (E längs x, Ausbreitung +z) auf eine Kugel in verlustfreier Matrix (`box_with_ball`, PML) → absorbierte Leistung → Temperatur (Wärmesenke T = T_ref an den
+  Außenflächen der Box) → optional selbstkonsistent mit ε(T) (`ThermoOptical3D`, Relaxation, Toleranz, Konvergenzverlauf) → optional Wärmespannung (`Elasticity3D`, Wärmeausdehnung je
+  Material, Schrumpfung der Kugel, Außenflächen eingespannt oder frei); wählbar das **Viertelmodell** (x > 0, y > 0, Leistung und Energie ×4, Felder gespiegelt). Fall **Quader**: Randbedingungen je
+  Fläche (frei, eingespannt, Symmetrie, Zug/Druck), Temperaturänderung und Schrumpfung linear in z (damit auch das Schrumpfblock-Beispiel R7 der Bibliothek, Viertelmodell mit Substrat) oder eine
+  gleichmäßige **Wärmequelle** (mW/µm³) mit Wärmesenken auf gewählten Flächen (`Thermal3D`, Rest adiabatisch), deren Temperaturfeld die Wärmedehnung treibt. Ergebnis: Kennzahlen, Schnitte
+  senkrecht zu x, y oder z für T, |E|/E₀, u, σ-Komponenten und Von Mises, Linienschnitte, verformtes Raster eines Schnitts mit Überhöhung, Konvergenz. **Vor jedem Lauf** zeigt die App Zellen,
+  Unbekannte, Speicher (`hpfem.estimate_memory`) und Zeit; der Worker bricht ab, wenn die Schätzung die einstellbare Speichergrenze (Vorgabe 8 GB) überschreitet. Eingebaute Prüfungen
+  (gemessen): Quader mit Symmetrieebenen unter Zug, gleichmäßiger Temperatur und Schrumpfung gegen die geschlossene Lösung (exakt in 3D, relative Abweichung < 1e-12); Wärmequelle zwischen
+  zwei Senken gegen T_ref + qW²/(8κ) (< 1e-12); Kugel gegen ΔT ≈ P/(4πκ)(1/R − 1/R_s) mit der Kapazität des Würfels als R_s (Vorlage n = 1, p = 2, 1500 Zellen: 30,8 K gegen 32,0 K, −3,7 %).
+  Gemessene Kosten (hpfemenv, SparseLU, ein Thread): Kugel-Vorlage 14 s Optik und Wärme, 6 s Mechanik, 10 790 optische Unbekannte; selbstkonsistent mit 5 Iterationen 65 s; Elastizität am
+  Quader 2 187 Unbekannte 2 s, 6 591 10 s, 14 739 48 s (590 MB), p = 3 mit 12 288 Unbekannten 60 s (800 MB) – daraus die Faustformel der App (für die Kugel zu hoch, etwa Faktor 3).
+  Grenzen: die Temperatur gilt für das gewählte Gebiet (Senke an der Box); Standardnetz grob (die Bibliothek warnt vor unteraufgelöster PML); stationär, keine temperaturabhängigen Materialdaten
+  außer ε(T), Optik auf dem unverformten Netz; Maxima sind Rasterwerte; Kette nicht gegen Literaturwerte für konkrete Partikel validiert; `absorbed_power_by_tag` und Lastbilanz weichen bei grobem
+  Netz um etwa 2e-3 voneinander ab; die Kugelschrumpfung wird an Quadraturpunkten ausgewertet. Neue Module `fem_thermo3d.py`, `fem_thermo3d_app.py`, `fem_thermo3d_worker.py`, Tests
+  `tests/test_thermo3d.py`; Eingriff in `fem_thermo_app.py` (Schalter 2D/3D), `fem_app.py` (Dateiliste, Modusname), `fem_run.py` (`feats["thermo3d"]`).
 * Neu: Modus **„Wärme und Mechanik (2D)“** (Seitenleiste; hpfem 0.5, `Thermal2D`, `ThermoOptical2D`, `Elasticity2D`). Fall **Nanodraht**: ebene Welle auf einen Draht
   in verlustfreier Matrix (`square_with_disc`, PML) → absorbierte Leistung → Temperatur (Wärmesenke T = T_ref am äußeren Rand; Leitfähigkeit je Material) →
   optional selbstkonsistent mit ε(T) = ε + (dε/dT)(T − T_ref) (`ThermoOptical2D`, Relaxation, Toleranz, Konvergenzverlauf) → optional Wärmespannung in ebener

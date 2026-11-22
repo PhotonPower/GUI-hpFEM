@@ -58,7 +58,8 @@ if _worker.is_file():
     _wtext = _worker.read_text(encoding="utf-8", errors="replace")
     for _f in ("fem_axi.py", "fem_axi_worker.py", "fem_axi_app.py", "fem_ui.py", "fem_study.py", "fem_study_app.py", "fem_emit.py", "fem_emit_app.py",
                "fem_emit_worker.py", "fem_wg.py", "fem_wg_app.py", "fem_wg_worker.py", "fem_disp.py", "fem_bands.py", "fem_bands_app.py", "fem_bands_worker.py", "fem_study_worker.py",
-               "fem_thermo.py", "fem_thermo_app.py", "fem_thermo_worker.py", "fem_threed.py", "fem_threed_app.py", "fem_threed_worker.py", "fem_threed_gmsh.py", "fem_ports3d.py", "fem_ports3d_app.py", "fem_ports3d_worker.py",
+               "fem_thermo.py", "fem_thermo_app.py", "fem_thermo_worker.py", "fem_thermo3d.py", "fem_thermo3d_app.py", "fem_thermo3d_worker.py",
+               "fem_threed.py", "fem_threed_app.py", "fem_threed_worker.py", "fem_threed_gmsh.py", "fem_ports3d.py", "fem_ports3d_app.py", "fem_ports3d_worker.py",
                "fem_time.py", "fem_time_app.py", "fem_time_worker.py"):
         if not (HERE / _f).is_file():
             _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
@@ -212,14 +213,14 @@ ver = S.ver
 st.sidebar.title("FEM-Modellwerkstatt")
 MODES = {"periodic": "Periodische Struktur (Gitter, Metaoberfläche)", "axi": "Rotationskörper: Resonator, Emitter",
          "study": "Studie: Optimierung, Rekonstruktion, UQ", "waveguide": "Wellenleiter und Ports", "bands": "Bandstruktur (photonischer Kristall)",
-         "thermo": "Wärme und Mechanik (2D)",
+         "thermo": "Wärme und Mechanik (2D und 3D)",
          "threed": "3D-Strukturen (Kugel, Würfel, kubischer Kristall)",
          "time": "Zeitbereich: Pulse, Sonden, Spektren"}
 app_mode = st.sidebar.radio("Art des Modells", list(MODES), format_func=MODES.get, key="app_mode",
                             help="Periodisch: Elementarzelle mit Bloch-Rändern, ebene Welle (Streuung, Beugung). Rotationskörper: Struktur mit "
                                  "Rotationssymmetrie um z (Mikrosäule, Kugel, Scheibe), Resonanzen und Emission eines Dipols. Studie: Optimierung, "
                                  "Parameterrekonstruktion und Unsicherheiten einer Gitterzelle mit dem Job-Runner der Bibliothek. Wellenleiter und Ports: Bauteil in der Chipebene "
-                                 "zwischen modalen Ports (S-Matrix) und Moden des Querschnitts. Wärme und Mechanik: absorbierte Leistung → Temperatur → Wärmespannung (2D), auch selbstkonsistent, sowie Block und Zylinder unter Last. 3D-Strukturen: Streuung an Kugel oder Würfel, Resonanzen und kubische Bandstruktur mit den 3D-Lösern (speicherintensiv, mit Schätzung vor dem Lauf). Zeitbereich: Pulse und Dauerstrich mit Sonden, Spektren und Feldfilmen. Bandstruktur: Bänder und Lücken eines 2D-photonischen Kristalls (Floquet-Bloch). Emitter in einer Gitterzelle: im Modus „Periodische Struktur“ "
+                                 "zwischen modalen Ports (S-Matrix) und Moden des Querschnitts. Wärme und Mechanik: absorbierte Leistung → Temperatur → Wärmespannung (2D und 3D: Draht, Kugel), auch selbstkonsistent, sowie Block, Zylinder und Quader unter Last. 3D-Strukturen: Streuung an Kugel oder Würfel, Resonanzen und kubische Bandstruktur mit den 3D-Lösern (speicherintensiv, mit Schätzung vor dem Lauf). Zeitbereich: Pulse und Dauerstrich mit Sonden, Spektren und Feldfilmen. Bandstruktur: Bänder und Lücken eines 2D-photonischen Kristalls (Floquet-Bloch). Emitter in einer Gitterzelle: im Modus „Periodische Struktur“ "
                                  "(Reiter 1 und Aufgabe „Emitter“).")
 if app_mode == "axi":
     fem_axi_app.sidebar_model()
