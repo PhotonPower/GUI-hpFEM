@@ -2,6 +2,7 @@
 
 ## Unveröffentlicht
 
+* Neu: eigener Seitenleisten-Eintrag **„3D-Wellenleiter und Ports (Streifen, Koppler, Ring)“**; er öffnet den 3D-Modus direkt mit der Aufgabe „Wellenleiter und Ports“ (vorher nur über Modus „3D-Strukturen“ → Aufgabe erreichbar).
 * Neu: **Ringresonator in 3D** (Modus „3D-Strukturen“, Aufgabe „Wellenleiter und Ports“, Bauteil „Ringresonator (Add-Drop, Gmsh)“; hpfem 0.5, Vorlage nach
   `examples/ring_resonator_3d` der Bibliothek): Ring zwischen zwei geraden Zuleitungen gleichen Querschnitts (Parameter Ringradius, Breite, Höhe, Spalt, Ränder,
   Materialien Kern/Mantel), Gmsh-Netz mit gekrümmten Tetraedern (`fem_ring3d_mesh.py`, Port von `ring_mesh.py`; Zellgröße am Kern und fern, Staffelweg, Ordnung p am Kern
