@@ -25,8 +25,29 @@
   n = 1, p = 2: 2 526 Unbekannte, 2 s, +5 %; n = 2, p = 3 braucht 5,5 GB und über 2 min. Resonanzen ε = 12, n = 1, p = 2: 9 324 Unbekannte, 72 s (λ ≈ 715 nm, Q ≈ 12,6, nicht
   validiert). Bandstruktur: das leere Gitter trifft bei X die exakten Werte (0,5 ×4, 1,118), aber ein k-Punkt kostet schon bei 2 936 Unbekannten 17 bis 75 s; die Bibliothek
   meldet bei den Gittern ihrer Generatoren, dass gegenüberliegende Facetten weder gleich noch geschachtelt seien (Hinweis im Protokoll, die Rechnung ist trotzdem richtig).
-  Nicht dabei: Substrate und Schichtstapel in 3D, Ports in 3D, hp-adaptive Verfeinerung, Gmsh-Netze, 3D-Wärme und -Mechanik.
+  Nicht dabei: 3D-Wärme und -Mechanik.
 
+* Neu: **3D-Strukturen erweitert** (hp-FEM 0.5): (1) **Substrat und Schichtstapel** (Streuung, Gmsh-Geometrie): `LayerStack3D` als geschichteter Hintergrund der Streufeld-Formulierung (`ScatteringSetup3D.background`),
+  ebene Welle unter beliebigem Einfallswinkel, s oder p, Azimut (`LayeredPlaneWave3D.field`), R, T, A des Stapels ohne Objekt, Objekt (Kugel, Zylinder, Quader) mit Abstand über der Oberkante z = 0.
+  (2) **Gmsh-Netze**: eigene Geometrie (neues Modul `fem_threed_gmsh.py`: Box, jede Schicht ein Volumen, Objekt, Elemente zweiter Ordnung, Maschenfelder am Objekt und je Schicht; physikalische Gruppen für Volumina und
+  die sechs Boxseiten) oder hochgeladene `.msh`-Datei mit Tabelle Zellmarke → Material, Wahl der Streukörper-Marken, Flächenmarken ohne Eintrag werden zu den Boxseiten (Worker-Aufruf `inspect` meldet die Marken).
+  (3) **hp-adaptive Verfeinerung der Streuung**: `AdaptiveMesh3D` + `Scattering3D.estimate` + `dorfler_marking` + `hp_decide_by_prediction` + `hp_refine` + `predict_indicators`, Abbruch bei Schrittzahl, Obergrenze
+  Unbekannte, Speichergrenze oder η/η₀; Konvergenzdiagramm (η, Q_sca gegen Unbekannte), Schritttabelle, Netz gefärbt nach Ordnung. (4) Neue Aufgabe **Wellenleiter und Ports (S-Parameter)**
+  (`fem_ports3d.py`, `fem_ports3d_app.py`, `fem_ports3d_worker.py`): Streifenwellenleiter und Richtkoppler zwischen modalen Ports (`s_parameters`, `WaveguidePort`; Stirnflächen z = 0 und z = L, PEC-Seitenwände),
+  Netze als Tensorgitter mit Gitterlinien auf den Kernkanten (`hpfem.box` auf Indexkoordinaten, dann Knoten verschoben; `hpfem.box` selbst ist gleichmäßig), S-Matrix, R, T, Verlust, n_eff der Portmoden, |E|² im Längs- und Querschnitt,
+  Referenzen aus dem 2D-Modenlöser (β der Grundmode bzw. Supermoden; Theorie gekoppelter Moden) auf demselben und auf einem feineren Netz (halbe Zelle, p + 2); oder ein Gmsh-Netz mit Flächenmarken als PEC-Wand oder Port.
+  Neue Tests `tests/test_threed_ext.py` (9) und `tests/test_ports3d.py` (11).
+  **Gemessen (Wheel 0.5.0, SparseLU):** Gmsh-Kugel n = 2, ka = 1, p = 2, hw = 200 nm, PML 300 nm = 2 ferne Zellen (150 nm), 18 000 Unbekannte, 82 s: Q_sca = 0,7948 gegen 0,7969 (Mie, −0,3 %), Q_abs = −0,002;
+  mit nur einer Zelle im PML (250 nm) 0,60 (−24 %), mit 1,6 Zellen 0,17: das PML braucht mindestens zwei bis drei Zellen. Derselbe Fall mit einem „Stapel“ aus Luft (Einfallsmedium = Substrat = Luft): Q_sca = 0,811 (+1,7 % gegen Mie,
+  20 856 Unbekannte, 127 s); die Datei desselben Netzes liefert dieselben σ (1e-6). Stapel Luft/Glas bei 30°, p: R = 0,02525 stimmt mit der Fresnel-Formel überein. Silizium-Zylinder auf Glas (grobes Netz, 3 800 Unbekannte, 2,6 s):
+  Q_sca = 6,05 bei p = 1 gegen 8,67 bei p = 2 (19 500 Unbekannte, 127 s): p = 1 ist hier nicht konvergiert. Gold-Kugel auf Schicht (Vorlage, p = 1, 14 000 Unbekannte, 18 s): nur ein Mechanik-Test, die Zahlen sind nicht konvergiert (feineres Netz: Q_sca 0,35 statt 1,10).
+  hp-adaptiv (Kugel n = 2, ka = 2, Viertelmodell, n = 1, p = 2, 4 bis 5 Schritte, 16 s): η fällt von 0,133 auf 0,042 (2 526 → 10 638 Unbekannte), Q_sca 4,51 → 4,44 (Mie 4,77), nicht monoton; Q_abs ≈ −0,49 (PML unteraufgelöst, die Bibliothek warnt):
+  der residuale Schätzer sieht den PML-Fehler nur teilweise. Streifen Si/SiO₂ 450 × 220 nm, λ = 1550 nm: n_eff der Portmode 2,136 bei p = 1 und 150-nm-Zellen, 2,343 bei p = 2, 2,356 bei p = 3 (2D, 150 nm): bei p = 1 9 % zu klein; 3D mit p = 1: T = 0,995, R = 0,005
+  (8 s, 5 000 Unbekannte), mit p = 2 und 150 × 400 nm Zellen 10 000 Unbekannte, 198 s. Richtkoppler (Lücke 200 nm, L = 1 µm, p = 1, 150-nm-Zellen, Supermoden-Ports): cross = 0,038, Kopplungslänge 10,3 µm auf dem Netz der Rechnung gegen 24,6 µm auf dem feinen
+  Referenznetz (cross_Ref = 0,004): das grobe Netz koppelt viel zu stark, cross ist bei kurzen Kopplern empfindlich auf den Phasenfehler (0,12 bis 0,20 rad). Ein Gmsh-Streifen (ungeordnetes Netz, p = 1) liefert n_eff = 2,27.
+  **Grenzen:** das PML ist für den Index 1 ausgelegt (Substrat und Schichten höher: Richtwerte); der Querschnitt aus dem Fluss um das Objekt ist an verlustbehafteten, berührenden Schichten nicht eindeutig; Objekte, die eine Grenzfläche schneiden, gibt es nicht;
+  ein Stapel geht nur mit Gmsh-Geometrie; Q der Datei beruht auf der Projektion der Oberfläche mit geraden Facetten; 3D-Wellenleiter sind mit p = 1 nicht konvergiert und mit p ≥ 2 teuer; keine Ringresonator-Vorlage (große Netze, `ring_mesh.py` der Bibliothek erzeugt die Datei);
+  Resonanzen (auch mit Gmsh-Netzen) und 3D-Bänder bleiben nicht gegen analytische Lösungen validiert; kein Export; keine 3D-Wärme und -Mechanik.
 * Neu: Modus **„Zeitbereich: Pulse, Sonden, Spektren“** (Seitenleiste; hpfem 0.5, `TimeDomain2D` und `TimeDomain3D`, Newmark-β, implizit): 2D-Schnitt (Rechteck mit den
   Formen des Wellenleiter-Modus, E in der Ebene, je Meter in z) oder 3D-Kasten mit Kugel (`box_with_ball`, sehr grobes Netz, Grenze 30 000 Freiheitsgrade). Quelle: Gauß-
   förmige Stromdichte mit Position, Größe und Polarisation; Zeitsignal modulierter Gauß-Puls (`modulated_gaussian`), Gauß-Puls (`gaussian_pulse`) oder Dauerstrich mit
