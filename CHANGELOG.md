@@ -2,6 +2,27 @@
 
 ## Unveröffentlicht
 
+* Neu: **Ringresonator in 3D** (Modus „3D-Strukturen“, Aufgabe „Wellenleiter und Ports“, Bauteil „Ringresonator (Add-Drop, Gmsh)“; hpfem 0.5, Vorlage nach
+  `examples/ring_resonator_3d` der Bibliothek): Ring zwischen zwei geraden Zuleitungen gleichen Querschnitts (Parameter Ringradius, Breite, Höhe, Spalt, Ränder,
+  Materialien Kern/Mantel), Gmsh-Netz mit gekrümmten Tetraedern (`fem_ring3d_mesh.py`, Port von `ring_mesh.py`; Zellgröße am Kern und fern, Staffelweg, Ordnung p am Kern
+  innerhalb einer Reichweite und fern), vier modale Ports (1 Eingang, 2 Through, 3 Drop, 4 Add), Anregung an Port 1, optional das **halbe Modell** (magnetische Spiegelebene
+  z = h/2, S-Parameter des ganzen Bauteils). Ergebnis: Through, Drop, Add und Reflexion über der Wellenlänge (feste Wellenlängen oder **automatische Suche**: neun Punkte um die
+  Resonanz des isolierten Rings, dann neun innerhalb ±2 Halbwertsbreiten des angepassten Pols), die Resonanz als gemeinsamer komplexer Pol von Through und Drop (`fit_pole`:
+  Lage, Halbwertsbreite, belastete Güte, Rest der Anpassung), die **Referenz** des isolierten Rings als Rotationskörper (`AxisymmetricCavity`, Azimutordnungen m0−1, m0, m0+1 aus
+  n_eff der Zuleitung, nächste Resonanz zum Ziel) und die **FSR-Schätzung** λ²/(n_g·2πR) aus dem Gruppenindex der geraden Zuleitung (2D-Modenlöser, Mittendifferenz über ±5 nm,
+  Materialdispersion enthalten) mit dem FSR des isolierten Rings daneben; optional |E|² in der x–y-Ebene durch die Kernmitte bei der Wellenlänge mit dem größten Drop; Speicher-
+  und Zeitschätzung vor dem Lauf, harte Speichergrenze, wählbarer Löser (auto, SparseLU, MUMPS, cuDSS; nicht verfügbare Löser brechen vor der ersten Rechnung ab). Drei Vorlagen:
+  „Test“ (R = 1,5 µm, 150-nm-Zellen, p = 1, halbes Modell: 16 808 Unbekannte, 386 MB, rund 9 s je Wellenlänge bei vier Threads), „mittel“ (R = 2 µm, 150 nm, p = 2/1: 79 740 Unbekannte,
+  7,8 GB nach der Schätzung der Bibliothek, **nicht gelaufen**) und „Bibliotheksbeispiel“ (R = 2 µm, 100 nm, p = 3/2, 0,4 bis 1,7 Millionen Unbekannte, MUMPS und viel Speicher: **nicht gelaufen**).
+  Gemessen: Referenz R = 2 µm, p = 2 auf 100-nm-Zellen: m = 19 bei 1556,7 nm (Bibliothek, p = 4 auf 50 nm: 1557,39 nm), m = 18 bei 1604,6 nm (1605,23), m = 20 bei 1511,5 nm (1512,21);
+  Zuleitung 450 × 220 nm: n_eff = 2,354, n_g = 4,15 bei 1550 nm; FSR aus n_g·L für R = 2 µm rechnerisch 46,5 nm (die Bibliothek nennt 45 bis 48 nm für den isolierten Ring; hier nicht nachgerechnet). Der Testlauf (p = 1, R = 1,5 µm) zeigt nur die Rechenkette:
+  Energiebilanz Σ|S|² = 1 auf 1e-6, aber Through 0,88, Drop 0,09, Reflexion 7·10⁻⁴ bei 1555 nm ohne Bedeutung als Spektrum (Scheinresonanzen, wie die Bibliothek für p = 1 meldet).
+  Bei R = 1,5 µm weicht die FSR-Schätzung der geraden Zuleitung stark vom FSR des isolierten Rings ab (62 gegen 85 nm; vermutlich rückt die Mode im Bogen nach außen, nicht geprüft).
+  **Nicht validiert:** das 3D-Spektrum, die 3D-Resonanz gegen die Bibliothek (die Produktionsläufe in `benchmarks/results/` sind hier nicht reproduziert), die Güte. Die Wellenlängen einer
+  Rechnung teilen keine Faktorisierung (die Matrix hängt von ω ab); jede Wellenlänge kostet eine volle Lösung. Neue Module `fem_ring3d_mesh.py`; erweitert `fem_ports3d.py`, `fem_ports3d_app.py`,
+  `fem_ports3d_worker.py`; Tests in `tests/test_ports3d.py` (10 neue: Vorlagen und Prüfung, Pol-Anpassung gegen bekannten Pol, Netzgruppen, Lauf mit Energiebilanz, automatische Suche mit
+  synthetischem Pol, Speichergrenze und fehlender Löser, AppTest).
+
 * Neu: **Wärme und Mechanik in 3D** (Modus „Wärme und Mechanik“, Schalter „Raumdimension“ 2D/3D; hpfem 0.5, `Scattering3D`, `Thermal3D`, `ThermoOptical3D`, `Elasticity3D`).
   Fall **Kugel**: ebene Welle (E längs x, Ausbreitung +z) auf eine Kugel in verlustfreier Matrix (`box_with_ball`, PML) → absorbierte Leistung → Temperatur (Wärmesenke T = T_ref an den
   Außenflächen der Box) → optional selbstkonsistent mit ε(T) (`ThermoOptical3D`, Relaxation, Toleranz, Konvergenzverlauf) → optional Wärmespannung (`Elasticity3D`, Wärmeausdehnung je
