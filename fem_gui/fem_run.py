@@ -169,6 +169,7 @@ try:
         feats["dataports"] = feats["offaxis"] = False
     feats["bands"] = all(hasattr(hpfem, n) for n in ("BandStructure2D", "BandStructureSetup2D", "PeriodicPair2D"))
     feats["thermo"] = all(hasattr(hpfem, n) for n in ("Thermal2D", "ThermoOptical2D", "Elasticity2D", "ElasticitySetup2D"))
+    feats["thermo3d"] = all(hasattr(hpfem, n) for n in ("Thermal3D", "ThermoOptical3D", "Elasticity3D", "ElasticitySetup3D", "Scattering3D", "box_with_ball", "estimate_memory"))
     feats["threed"] = all(hasattr(hpfem, n) for n in ("Scattering3D", "Resonance3D", "BandStructure3D", "MieSphere", "box_with_ball", "estimate_memory"))
     feats["time"] = all(hasattr(hpfem, n) for n in ("TimeDomain2D", "TimeDomainSetup2D", "modulated_gaussian", "TimeSignal"))
     feats["ports"] = all(hasattr(hpfem, n) for n in ("WaveguidePort", "s_parameters", "PropagatingMode", "subdivide"))

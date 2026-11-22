@@ -263,8 +263,8 @@ n_eff = 1,98555 gegen 1,98555 aus der Dispersionsgleichung des Schichtwellenleit
 isotrope Materialien, nur Ports links und rechts (keine Ports an den oberen und unteren Wänden), keine dreidimensionalen Ports (`PortModes3D`). Resonante Bauteile (Ringe, Koppler) sind
 nicht vorbereitet; sie brauchen feine Netze (Spalt und Steg aufgelöst) und viele Wellenlängen. Eine Vorlage dafür ist nicht mitgeliefert, weil ich eine Resonanz hier nicht nachgerechnet habe.
 
-## Wärme und Mechanik (Seitenleiste „Art des Modells“ → „Wärme und Mechanik (2D)“)
-Der Modus koppelt drei hpfem-Löser in zwei Dimensionen (Ergebnisse je Meter in der unendlichen Richtung). Reiter 1 wählt den Fall.
+## Wärme und Mechanik (Seitenleiste „Art des Modells“ → „Wärme und Mechanik (2D und 3D)“)
+Der Modus koppelt drei hpfem-Löser in zwei Dimensionen (Ergebnisse je Meter in der unendlichen Richtung); über den Schalter „Raumdimension“ oben gibt es dieselbe Kette in 3D (siehe unten). Reiter 1 wählt den Fall.
 
 * **Nanodraht: Optik → Wärme → Spannung.** Materialien (optische Daten wie sonst, dazu je Material Wärmeleitfähigkeit κ, E-Modul, Querkontraktion ν, Ausdehnung α und
   das thermo-optische dε/dT), Draht und Matrix (die Matrix muss verlustfrei sein), Wellenlänge, Feldamplitude E₀ (die App zeigt die Intensität), Radius und Gebiet. Das
@@ -280,6 +280,26 @@ Draht ohne Rückkopplung gegen die Linienquelle), Feldkarten, Schnitte und das v
 Wichtig: Die Temperatur gilt für das gewählte Gebiet (in 2D wächst sie logarithmisch mit dem Abstand der Senke). Temperatur und Schrumpfung wirken als Eigendehnung in der
 Ebene (ε*_zz = 0), die Von-Mises-Spannung nimmt σ_zz = ν(σ_xx + σ_yy). Es gibt nur den stationären Fall, keine Konvektion und Strahlung, keine temperaturabhängigen Materialdaten
 außer ε(T), und die Optik rechnet auf dem unverformten Netz. Die Materialvorgaben sind grobe Richtwerte; die Vorlage „selbstkonsistent“ trägt ein Beispiel-dε/dT, keinen Messwert.
+
+### 3D (Schalter „Raumdimension“ = 3D)
+Zwei Fälle mit `Scattering3D`, `Thermal3D`, `ThermoOptical3D` und `Elasticity3D` (Ergebnisse in W, J, K, nm, MPa).
+
+* **Kugel: Optik → Wärme → Spannung.** Materialien wie in 2D (optische Daten, κ, E, ν, α, dε/dT), Kugel und Matrix (verlustfrei), Wellenlänge, E₀, Radius, Innenbreite und Außenbreite in Radien
+  (der Rest ist die PML; **an den Außenflächen der Box sitzt die Wärmesenke**), Zellen je Radius. Die Welle läuft in +z, E längs x. Das **Viertelmodell** rechnet nur x > 0, y > 0 (Faktor 4 für Leistung und Energie,
+  die Felder werden gespiegelt) und spart etwa einen Faktor 4 an Speicher. „Selbstkonsistent“ löst die Optik je Iteration neu (bei der Vorlage 5 Iterationen, rund 65 s). „Wärmespannung“ rechnet `Elasticity3D`
+  (Außenflächen eingespannt oder frei, Schrumpfung der Kugel optional).
+* **Quader.** Breite, Tiefe, Höhe und Zellen je Richtung; Randbedingungen je Fläche (frei, eingespannt, Symmetrie, Zug/Druck in MPa); ΔT bei z = 0 und z = H (linear) und Schrumpfung bei z = 0 und z = H
+  (linear; „Schrumpfblock auf dem Substrat“ ist das Viertelmodell aus Beispiel R7 der Bibliothek) **oder** eine **Wärmequelle** q (mW/µm³) mit Wärmesenken auf den gewählten Flächen (`Thermal3D`; die übrigen
+  Flächen sind adiabatisch), deren Temperatur die Wärmedehnung treibt.
+
+Reiter 2: Polynomordnung, Auflösung der Schnitte, **Speichergrenze** und der Knopf „Netz prüfen und Speicher schätzen“ (Zellen, Unbekannte, `estimate_memory`, Zeitrichtwerte; rot, wenn die Schätzung die Grenze
+überschreitet, gelb ab 60 % des freien Hauptspeichers). Reiter 3: Kennzahlen mit den Prüfungen (Quader gegen die geschlossene Lösung, Wärmequelle gegen die eindimensionale Lösung, Kugel gegen die Schätzung
+ΔT ≈ P/(4πκ)(1/R − 1/R_s)), Schnitte senkrecht zu x, y oder z mit Schieber, Linienschnitte, das verformte Raster eines Schnitts und die Konvergenz der Schleife.
+
+Wichtig: 3D ist teuer (nur SparseLU, ein Thread; 15 000 Unbekannte der Mechanik brauchen etwa 50 s und 0,6 GB; die Zeitangabe der App ist eine Faustformel). Das Standardnetz ist grob (die Bibliothek meldet eine
+unteraufgelöste PML); Konvergenz prüfen. Die Temperatur gilt für das gewählte Gebiet. Wie in 2D: stationär, keine Konvektion und Strahlung, Materialdaten außer ε(T) unabhängig von T, Optik auf dem unverformten
+Netz, Maxima sind Rasterwerte, Materialvorgaben sind grobe Richtwerte, die Kette ist nicht gegen Literaturwerte für konkrete Partikel validiert.
+
 ## Zeitbereich (Seitenleiste „Art des Modells“ → „Zeitbereich“)
 Der Modus löst die Wellengleichung im Zeitbereich mit `hpfem.TimeDomain2D/3D` (hp-Elemente im Raum, implizite Newmark-Regel in der Zeit). Reiter 1: Vorlage, Dimension (2D-Schnitt
 oder 3D-Kasten mit Kugel), Materialien (konstante, reelle ε bei λ₀, dazu eine Leitfähigkeit σ in S/m je Material), Gebiet und Formen (2D wie im Wellenleiter-Modus), Rand je Seite
