@@ -24,11 +24,11 @@ def small(task="scatter", shape="sphere", **kw):
 # ------------------------------------------------------------------------------------------------------------------ model and job
 def test_presets_validate_and_jobs_are_json():
     names = ft.presets()
-    assert len(names) >= 5 and {m["task"] for m in names.values()} == {"scatter", "resonance", "bands"}
+    assert len(names) >= 5 and {m["task"] for m in names.values()} == {"scatter", "resonance", "bands", "ports"}
     for name, m in names.items():
         assert not [t for lv, t in ft.validate(m) if lv == "error"], name
         j = json.loads(json.dumps(ft.job(m)))
-        assert j["task"] == m["task"] and j["order"] == m["order"]
+        assert j["task"] == m["task"] and j["order"] == (m["p3"]["order"] if m["task"] == "ports" else m["order"])
     j = ft.job(ft.presets()["Dielektrische Kugel n = 2, ka = 2 (Mie-Referenz)"])
     assert j["eps"] == [[4.0, 0.0]] and j["quarter"] is True and j["wavelengths_nm"] == [314.159]
 

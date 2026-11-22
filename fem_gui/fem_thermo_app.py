@@ -69,6 +69,13 @@ def render_thermo(ctx):
     """ctx: py, repo, work (Path), threads, lib, FEATS."""
     _init()
     work = Path(ctx["work"]) / "thermo"
+    busy3 = S.get("th3_proc") is not None
+    dim = "3D" if busy3 else ("2D" if S.get("th_proc") is not None else st.radio("Raumdimension", ["2D", "3D"], horizontal=True, key="th_dim",
+                                                                              help="2D: Draht, Block, Zylinder (je Meter). 3D: Kugel und Quader."))
+    if dim == "3D":
+        import fem_thermo3d_app
+
+        return fem_thermo3d_app.render_thermo3d(ctx)
     st.title("FEM-Modellwerkstatt: Wärme und Mechanik")
     st.caption("Absorbierte Leistung → Temperatur (auch selbstkonsistent mit ε(T)) → Wärmespannung, und Mechanik von Block und Zylinder (2D, ebene Dehnung bzw. "
                "rotationssymmetrisch). hp-FEM: Thermal2D, ThermoOptical2D, Elasticity2D.")

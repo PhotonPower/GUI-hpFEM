@@ -240,6 +240,36 @@ Grenzen: Der Wheel hat nur den direkten Löser SparseLU (ein Thread); 18 000 Unb
 des Lösers, das PML sei unteraufgelöst, erscheint bei diesen groben Netzen im Protokoll (so auch in der Validierung der Bibliothek). Resonanzen frieren das Material bei der Zielwellenlänge
 ein und sind, wie die Bandstruktur, nicht gegen analytische Lösungen validiert; ein k-Punkt der Bandstruktur dauert schon bei sehr kleinen Netzen Sekunden bis eine Minute.
 
+### 3D-Strukturen: Schichtstapel, Gmsh-Netze, hp-Adaptivität, Wellenleiter
+
+**Netz** (Reiter 1, Streuung und Resonanzen): *Bibliotheksnetz* (wie oben), *Gmsh-Geometrie* (Kugel, Zylinder mit Achse z oder Quader in einer Box mit PML-Rand) oder *Eigene Gmsh-Datei*.
+Bei der Gmsh-Geometrie stehen in Reiter 2 Innenraum (halbe Breite), PML-Dicke, Abstand nach oben, Zelle am Objekt, Zelle fern, Übergangslänge und Geometrieordnung; „Maschenweiten vorschlagen“
+setzt Richtwerte aus der kürzesten Wellenlänge. **Das PML braucht mindestens zwei bis drei ferne Zellen Dicke** (gemessen: Kugel n = 2, ka = 1, p = 2: PML = 2 Zellen: Q_sca 0,3 % neben der Mie-Reihe;
+eine Zelle: 24 % daneben); die Anzeige „PML = x ferne Zellen“ und die Warnung aus dem Protokoll helfen beim Prüfen. Voraussetzung: das Python-Modul `gmsh` im hpfem-Python.
+
+**Schichtstapel** (Streuung mit Gmsh-Geometrie): Haken „Objekt über einem Schichtstapel“, Einfallsmedium (verlustfrei), Schichten (Material, Dicke; Hinzufügen und Entfernen), Substrat, Abstand
+des Objekts zur Oberkante (0 = aufliegend; Kugeln brauchen Abstand), Tiefe des Substrats bis zum PML, Einfallswinkel, Polarisation s oder p, Azimut. Die Hintergrundlösung ist der analytische Stapel (`LayerStack3D`),
+das Objekt streut nur die Abweichung. Die Tabelle zeigt R, T, A des Stapels ohne Objekt; σ sind auf die Intensität der einfallenden Welle bezogen, Q auf die Projektion des Objekts auf die x-y-Ebene.
+Ein Stapel aus Luft liefert dieselbe Kugel wie ohne Stapel (Q_sca +1,7 % gegen Mie bei 21 000 Unbekannten); R einer Luft/Glas-Grenzfläche bei 30° (p) stimmt mit der Fresnel-Formel überein.
+Das PML ist für den Index 1 ausgelegt: bei Substrat und Schichten mit höherem Index sind die Querschnitte Richtwerte, Substrat und Schichten sollten bis in den PML-Bereich reichen (Tiefe einstellen).
+
+**Eigene Datei:** Datei hochladen (Gmsh 4.1 ASCII), Einheit der Koordinaten wählen, „Datei lesen“ (zeigt Zellmarken mit Zellzahl, Flächenmarken, Ausdehnung), jeder Zellmarke ein Material zuweisen, die
+Zellmarken des Streukörpers ankreuzen, PML-Dicke einstellen (das PML liegt in der äußersten Schicht der Box). Randflächen ohne Marke werden zu den Seiten der Box (PEC). Streuung, Resonanzen und die
+hp-Verfeinerung laufen wie bei den eingebauten Netzen; Q bezieht sich auf die Projektion des Objekts (aus der Oberfläche mit geraden Facetten, bei gekrümmten Körpern ungenau, σ ist davon unabhängig).
+
+**hp-Adaptivität** (Reiter 2, Streuung): Haken „hp-adaptive Verfeinerung“, Schritte, Dörfler-Anteil θ, Obergrenze Unbekannte, optional η/η₀. Je Schritt wird gelöst, der residuale Fehlerschätzer
+ausgewertet, markiert und h- oder p-verfeinert; die Startordnung p ist die kleinste. Reiter 3 „hp-Verfeinerung“: Diagramm η und Q_sca gegen Unbekannte, Tabelle je Schritt; Reiter „Netz“: Schnitt, auf Wunsch
+nach Ordnung gefärbt. η fällt, Q_sca konvergiert bei grobem PML nicht monoton (Kugel n = 2, ka = 2: η 0,133 → 0,042, Q_sca 4,51 → 4,44, Mie 4,77, in 16 s).
+
+**Wellenleiter und Ports (Aufgabe „Wellenleiter und Ports (S-Parameter)“):** Bauteil Streifenwellenleiter, Richtkoppler oder eigene Gmsh-Datei. Kern (Breite, Höhe), Länge, Rand, Materialien Kern und Mantel
+(dispersiv auswertbar), beim Koppler Spalt und Portart (vier Halbflächen-Ports oder ein Port mit zwei Moden je Stirnfläche); Reiter 2: Wellenlängen, Zelle (und Zelle längs z, gröber spart viel), Ordnung,
+Anregung (Port und Mode), Feld der Anregung. Ergebnis: Transmission, Reflexion, Verlust (Leistungsbilanz, Fehler der Portnormierung), S-Matrix (|S|², Spalte = Anregung), n_eff der Portmoden mit feiner 2D-Referenz,
+beim Koppler cross, bar, Kopplungslänge nach der Theorie gekoppelter Moden (Netz der Rechnung und feines Referenznetz) sowie |E|² im Längs- und Querschnitt. Eigene Datei: Flächenmarken als PEC-Wand oder Port
+(mit Modenzahl) zuweisen (z. B. der Ringresonator `examples/ring_resonator_3d/ring_mesh.py` der Bibliothek, dort jeweils Port 11 und 12).
+**Grenzen:** 3D-Wellenleiter sind teuer. n_eff des 450 × 220 nm Si/SiO₂-Streifens ist mit p = 1 und 150-nm-Zellen um 9 % zu klein (2,14 gegen 2,36); mit p = 2 und 10 000 Unbekannten dauert die Rechnung 3 Minuten.
+Ein Richtkoppler mit p = 1 und 150-nm-Zellen koppelt viel zu stark (Kopplungslänge 10 µm gegen 25 µm auf dem feinen Netz), cross ist bei kurzen Kopplern sehr empfindlich auf den Phasenfehler. Die Vorlagen
+zeigen also die Mechanik, keine konvergierten Bauteile; Netz und Ordnung muss man prüfen (die Tabelle zeigt dafür die Referenzen). Halbflächen-Ports verfälschen cross zusätzlich um einige Prozent.
+
 ## Wellenleiter und Ports (Seitenleiste „Art des Modells“ → „Wellenleiter und Ports“)
 
 Ein zweidimensionales Bauteil in der Ebene (x, y), vier Reiter wie bei den anderen Modi. Reiter 1: Materialien (isotrop), Hintergrund (Mantel), Gebiet (Länge L in x, Breite B in y) und
@@ -260,11 +290,11 @@ n_eff = 1,98555 gegen 1,98555 aus der Dispersionsgleichung des Schichtwellenleit
 450 × 220 nm, n = 3,48 in 1,44 (2148 Dreiecke, 29 s): n_eff = 2,356, 1,731, 1,447, 1,367 (der Grundmode liegt im üblichen Bereich von 2,3 bis 2,4 für einen Siliziumdraht in Quarz).
 
 **Grenzen.** Gerade Elemente an den Rändern der Formen (Merkmale unter etwa einem Drittel der Zellgröße werden nicht aufgelöst, Gitterzähne und kleine Spalte brauchen „Faktor an Grenzflächen“ ≈ 0,5),
-isotrope Materialien, nur Ports links und rechts (keine Ports an den oberen und unteren Wänden), keine dreidimensionalen Ports (`PortModes3D`). Resonante Bauteile (Ringe, Koppler) sind
+isotrope Materialien, nur Ports links und rechts (keine Ports an den oberen und unteren Wänden); dreidimensionale Ports (`PortModes3D`) gibt es im Modus „3D-Strukturen“. Resonante Bauteile (Ringe, Koppler) sind
 nicht vorbereitet; sie brauchen feine Netze (Spalt und Steg aufgelöst) und viele Wellenlängen. Eine Vorlage dafür ist nicht mitgeliefert, weil ich eine Resonanz hier nicht nachgerechnet habe.
 
-## Wärme und Mechanik (Seitenleiste „Art des Modells“ → „Wärme und Mechanik (2D)“)
-Der Modus koppelt drei hpfem-Löser in zwei Dimensionen (Ergebnisse je Meter in der unendlichen Richtung). Reiter 1 wählt den Fall.
+## Wärme und Mechanik (Seitenleiste „Art des Modells“ → „Wärme und Mechanik (2D und 3D)“)
+Der Modus koppelt drei hpfem-Löser in zwei Dimensionen (Ergebnisse je Meter in der unendlichen Richtung); über den Schalter „Raumdimension“ oben gibt es dieselbe Kette in 3D (siehe unten). Reiter 1 wählt den Fall.
 
 * **Nanodraht: Optik → Wärme → Spannung.** Materialien (optische Daten wie sonst, dazu je Material Wärmeleitfähigkeit κ, E-Modul, Querkontraktion ν, Ausdehnung α und
   das thermo-optische dε/dT), Draht und Matrix (die Matrix muss verlustfrei sein), Wellenlänge, Feldamplitude E₀ (die App zeigt die Intensität), Radius und Gebiet. Das
@@ -280,6 +310,26 @@ Draht ohne Rückkopplung gegen die Linienquelle), Feldkarten, Schnitte und das v
 Wichtig: Die Temperatur gilt für das gewählte Gebiet (in 2D wächst sie logarithmisch mit dem Abstand der Senke). Temperatur und Schrumpfung wirken als Eigendehnung in der
 Ebene (ε*_zz = 0), die Von-Mises-Spannung nimmt σ_zz = ν(σ_xx + σ_yy). Es gibt nur den stationären Fall, keine Konvektion und Strahlung, keine temperaturabhängigen Materialdaten
 außer ε(T), und die Optik rechnet auf dem unverformten Netz. Die Materialvorgaben sind grobe Richtwerte; die Vorlage „selbstkonsistent“ trägt ein Beispiel-dε/dT, keinen Messwert.
+
+### 3D (Schalter „Raumdimension“ = 3D)
+Zwei Fälle mit `Scattering3D`, `Thermal3D`, `ThermoOptical3D` und `Elasticity3D` (Ergebnisse in W, J, K, nm, MPa).
+
+* **Kugel: Optik → Wärme → Spannung.** Materialien wie in 2D (optische Daten, κ, E, ν, α, dε/dT), Kugel und Matrix (verlustfrei), Wellenlänge, E₀, Radius, Innenbreite und Außenbreite in Radien
+  (der Rest ist die PML; **an den Außenflächen der Box sitzt die Wärmesenke**), Zellen je Radius. Die Welle läuft in +z, E längs x. Das **Viertelmodell** rechnet nur x > 0, y > 0 (Faktor 4 für Leistung und Energie,
+  die Felder werden gespiegelt) und spart etwa einen Faktor 4 an Speicher. „Selbstkonsistent“ löst die Optik je Iteration neu (bei der Vorlage 5 Iterationen, rund 65 s). „Wärmespannung“ rechnet `Elasticity3D`
+  (Außenflächen eingespannt oder frei, Schrumpfung der Kugel optional).
+* **Quader.** Breite, Tiefe, Höhe und Zellen je Richtung; Randbedingungen je Fläche (frei, eingespannt, Symmetrie, Zug/Druck in MPa); ΔT bei z = 0 und z = H (linear) und Schrumpfung bei z = 0 und z = H
+  (linear; „Schrumpfblock auf dem Substrat“ ist das Viertelmodell aus Beispiel R7 der Bibliothek) **oder** eine **Wärmequelle** q (mW/µm³) mit Wärmesenken auf den gewählten Flächen (`Thermal3D`; die übrigen
+  Flächen sind adiabatisch), deren Temperatur die Wärmedehnung treibt.
+
+Reiter 2: Polynomordnung, Auflösung der Schnitte, **Speichergrenze** und der Knopf „Netz prüfen und Speicher schätzen“ (Zellen, Unbekannte, `estimate_memory`, Zeitrichtwerte; rot, wenn die Schätzung die Grenze
+überschreitet, gelb ab 60 % des freien Hauptspeichers). Reiter 3: Kennzahlen mit den Prüfungen (Quader gegen die geschlossene Lösung, Wärmequelle gegen die eindimensionale Lösung, Kugel gegen die Schätzung
+ΔT ≈ P/(4πκ)(1/R − 1/R_s)), Schnitte senkrecht zu x, y oder z mit Schieber, Linienschnitte, das verformte Raster eines Schnitts und die Konvergenz der Schleife.
+
+Wichtig: 3D ist teuer (nur SparseLU, ein Thread; 15 000 Unbekannte der Mechanik brauchen etwa 50 s und 0,6 GB; die Zeitangabe der App ist eine Faustformel). Das Standardnetz ist grob (die Bibliothek meldet eine
+unteraufgelöste PML); Konvergenz prüfen. Die Temperatur gilt für das gewählte Gebiet. Wie in 2D: stationär, keine Konvektion und Strahlung, Materialdaten außer ε(T) unabhängig von T, Optik auf dem unverformten
+Netz, Maxima sind Rasterwerte, Materialvorgaben sind grobe Richtwerte, die Kette ist nicht gegen Literaturwerte für konkrete Partikel validiert.
+
 ## Zeitbereich (Seitenleiste „Art des Modells“ → „Zeitbereich“)
 Der Modus löst die Wellengleichung im Zeitbereich mit `hpfem.TimeDomain2D/3D` (hp-Elemente im Raum, implizite Newmark-Regel in der Zeit). Reiter 1: Vorlage, Dimension (2D-Schnitt
 oder 3D-Kasten mit Kugel), Materialien (konstante, reelle ε bei λ₀, dazu eine Leitfähigkeit σ in S/m je Material), Gebiet und Formen (2D wie im Wellenleiter-Modus), Rand je Seite
