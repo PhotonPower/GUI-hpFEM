@@ -250,6 +250,21 @@ n_eff = 1,98555 gegen 1,98555 aus der Dispersionsgleichung des Schichtwellenleit
 isotrope Materialien, nur Ports links und rechts (keine Ports an den oberen und unteren Wänden), keine dreidimensionalen Ports (`PortModes3D`). Resonante Bauteile (Ringe, Koppler) sind
 nicht vorbereitet; sie brauchen feine Netze (Spalt und Steg aufgelöst) und viele Wellenlängen. Eine Vorlage dafür ist nicht mitgeliefert, weil ich eine Resonanz hier nicht nachgerechnet habe.
 
+## Zeitbereich (Seitenleiste „Art des Modells“ → „Zeitbereich“)
+Der Modus löst die Wellengleichung im Zeitbereich mit `hpfem.TimeDomain2D/3D` (hp-Elemente im Raum, implizite Newmark-Regel in der Zeit). Reiter 1: Vorlage, Dimension (2D-Schnitt
+oder 3D-Kasten mit Kugel), Materialien (konstante, reelle ε bei λ₀, dazu eine Leitfähigkeit σ in S/m je Material), Gebiet und Formen (2D wie im Wellenleiter-Modus), Rand je Seite
+(PEC, absorbierend, PMC). Reiter 2: Zeitsignal (modulierter Gauß-Puls mit Träger λ₀ und Breite τ, Gauß-Puls, Dauerstrich mit weichem Einschalten), Quelle (Position, Gauß-Radius,
+Polarisation, Amplitude J₀), Sonden (eine Zeile je Punkt), Zeit (Schritte je Periode der höchsten Frequenz, Δt, Endzeit, höchste Frequenz, Zahl der Feldbilder, Newmark γ und β) und
+Netz. Die Kennzahlen (Träger, höchste Frequenz und kürzeste Wellenlänge, Δt, Schritte, Frequenzauflösung 1/T) und das Quellspektrum stehen darunter. Reiter 3 rechnet im eigenen
+Prozess (Fortschritt in Blöcken von Schritten, Abbruch möglich). Reiter 4: Feldfilm (Schieber und „Als Film abspielen“), Sonden E(t), Spektrum (FFT, Frequenz oder Wellenlänge,
+Hann-Fenster, „Übertragung“ = Sonde durch Quelle), Energie, Tabellen mit CSV.
+
+Wichtig: Die Trapezregel (β = ¼, γ = ½) ist bedingungslos stabil und erhält die Energie; der Zeitschritt bestimmt nur die Genauigkeit (Phasenfehler etwa (ω Δt)²/12 je Bogenmaß).
+Der absorbierende Rand ist erster Ordnung (nur senkrechter Einfall vollständig, keine PML). Materialien sind nicht dispersiv (Metalle mit ε < 0 gehen nicht). Das Netz richtet sich
+nach der kürzesten Wellenlänge des Pulses (aus Träger und Breite), ein sehr kurzer Puls braucht also ein feines Netz. Ein Rechenschritt kostet bei vielen Unbekannten mehr als bei
+wenigen (die Energie wird dann nicht in jedem Schritt berechnet). 3D: nur `box_with_ball` (Würfel mit Kugel), Ordnung und Zellen je Radius klein halten. Die Spektren sind nicht gegen
+eine Rechnung im Frequenzbereich geprüft; sie gelten im Band der Quelle und wenn das Signal bis zum Rechenende abgeklungen ist (sonst Hann-Fenster oder längere Rechnung).
+
 ## Bandstruktur (Seitenleiste „Art des Modells“ → „Bandstruktur“)
 Der Modus rechnet die Bänder eines zweidimensionalen photonischen Kristalls mit `hpfem.BandStructure2D` (Floquet-Bloch-Eigenproblem der Einheitszelle). Reiter 1: Vorlage,
 Gitter (quadratisch oder hexagonal), Materialien mit reellem ε, Formen in der Zelle (Scheibe, Rechteck, Ring, Polygon; spätere überdecken frühere, Angaben relativ zur Zellmitte

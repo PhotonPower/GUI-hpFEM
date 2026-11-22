@@ -2,6 +2,16 @@
 
 ## Unveröffentlicht
 
+* Neu: Modus **„Zeitbereich: Pulse, Sonden, Spektren“** (Seitenleiste; hpfem 0.5, `TimeDomain2D` und `TimeDomain3D`, Newmark-β, implizit): 2D-Schnitt (Rechteck mit den
+  Formen des Wellenleiter-Modus, E in der Ebene, je Meter in z) oder 3D-Kasten mit Kugel (`box_with_ball`, sehr grobes Netz, Grenze 30 000 Freiheitsgrade). Quelle: Gauß-
+  förmige Stromdichte mit Position, Größe und Polarisation; Zeitsignal modulierter Gauß-Puls (`modulated_gaussian`), Gauß-Puls (`gaussian_pulse`) oder Dauerstrich mit
+  weichem Einschalten (`TimeSignal` mit eigener Ableitung). Ränder je Seite PEC, absorbierend (Silver-Müller erster Ordnung) oder PMC; konstante reelle Materialien (bei λ₀
+  ausgewertet) mit Leitfähigkeit σ je Material, Verlust Im ε nur als σ (Umrechnung σ = ε₀ ω₀ Im ε wahlweise). Zeitschritt aus „Schritten je Periode der höchsten Frequenz“
+  (Voreinstellung 40) oder von Hand, Endzeit automatisch, Newmark-Parameter mit Stabilitätsprüfung (β ≥ (γ + ½)²/4), Hinweis auf den Phasenfehler (ω Δt)²/12. Ergebnisse:
+  Feldfilm (Schieber und Abspielen, feste oder je-Bild-Farbskala; 3D als Schnitt auf einem Gitter), Sonden E(t), Spektrum per FFT (Frequenz oder Wellenlänge, Hann-Fenster,
+  Übertragung |E|/|G′| der Quelle), Energie über der Zeit, Tabellen und CSV. Sechs Vorlagen. Neue Module `fem_time.py`, `fem_time_app.py`, `fem_time_worker.py`; der
+  Formeneditor des Wellenleiter-Moduls nimmt `bump` und `prefix` entgegen. Die Spektren sind nicht gegen eine Frequenzbereichsrechnung geprüft (getestet: Spitze der
+  Quelle bei λ₀, Laufzeit eines Pulses im Streifen auf 3 %, Energieerhaltung im PEC-Kasten, Dämpfung durch σ).
 * Neu: **Erweiterte Studien** (Modus „Studie“, Aufgabe Optimierung): Nebenbedingungen an Messgrößen (`optimize.constraints`, `hpfem.opt.OutcomeConstraint`,
   Verfahren bayesian) und an Parameter (`optimize.linear_constraints`, `hpfem.opt.LinearConstraint` auf dem Entwurfsraum, alle Verfahren), Mehrzieloptimierung
   (Verfahren `pareto`, `hpfem.opt.pareto_optimize` mit `objectives`, `maximize`, `ref_point`) und Mehrstufen-Optimierung (`multi_fidelity`, Stufen
