@@ -168,6 +168,9 @@ try:
     except Exception:
         feats["dataports"] = feats["offaxis"] = False
     feats["bands"] = all(hasattr(hpfem, n) for n in ("BandStructure2D", "BandStructureSetup2D", "PeriodicPair2D"))
+    feats["thermo"] = all(hasattr(hpfem, n) for n in ("Thermal2D", "ThermoOptical2D", "Elasticity2D", "ElasticitySetup2D"))
+    feats["threed"] = all(hasattr(hpfem, n) for n in ("Scattering3D", "Resonance3D", "BandStructure3D", "MieSphere", "box_with_ball", "estimate_memory"))
+    feats["time"] = all(hasattr(hpfem, n) for n in ("TimeDomain2D", "TimeDomainSetup2D", "modulated_gaussian", "TimeSignal"))
     feats["ports"] = all(hasattr(hpfem, n) for n in ("WaveguidePort", "s_parameters", "PropagatingMode", "subdivide"))
     feats["crystals"] = hasattr(hpfem, "AnisotropicStack") and hasattr(getattr(hpfem, "Material", None), "anisotropic")
     feats["dwr"] = hasattr(hpfem, "conical_dwr_estimate")

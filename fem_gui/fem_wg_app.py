@@ -87,8 +87,10 @@ def _num(col, label, key, value, step=10.0, lo=-1e6, hi=1e6, help=None):
     return float(col.number_input(label, lo, hi, float(value), step, key=key, format="%.6g", help=help))
 
 
-def _shape_editor(m, i, s, names, ver):
-    k = f"wg_s_{ver}_{i}"
+def _shape_editor(m, i, s, names, ver, bump=None, prefix="wg_s"):
+    """Editor of shape i; ``bump`` (default: this module's) is called before every st.rerun, ``prefix`` keeps the widget keys apart (fem_time_app)."""
+    k = f"{prefix}_{ver}_{i}"
+    bump = bump or _bump
     head = st.columns([2, 3, 1, 1, 1])
     s["type"] = head[0].selectbox("Form", list(fw.SHAPES), index=list(fw.SHAPES).index(s["type"]), format_func=fw.SHAPES.get, key=f"{k}_t",
                                   label_visibility="collapsed")
@@ -96,15 +98,15 @@ def _shape_editor(m, i, s, names, ver):
                                       label_visibility="collapsed")
     if head[2].button("↑", key=f"{k}_up", disabled=i == 0, help="Priorität erhöhen (spätere Formen überdecken frühere)"):
         m["shapes"][i - 1], m["shapes"][i] = m["shapes"][i], m["shapes"][i - 1]
-        _bump()
+        bump()
         st.rerun()
     if head[3].button("↓", key=f"{k}_dn", disabled=i == len(m["shapes"]) - 1, help="Priorität verringern"):
         m["shapes"][i + 1], m["shapes"][i] = m["shapes"][i], m["shapes"][i + 1]
-        _bump()
+        bump()
         st.rerun()
     if head[4].button("✕", key=f"{k}_del", help="Form entfernen"):
         m["shapes"].pop(i)
-        _bump()
+        bump()
         st.rerun()
     c = st.columns(4)
     t = s["type"]

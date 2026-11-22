@@ -2,6 +2,41 @@
 
 ## Unveröffentlicht
 
+* Neu: Modus **„Wärme und Mechanik (2D)“** (Seitenleiste; hpfem 0.5, `Thermal2D`, `ThermoOptical2D`, `Elasticity2D`). Fall **Nanodraht**: ebene Welle auf einen Draht
+  in verlustfreier Matrix (`square_with_disc`, PML) → absorbierte Leistung → Temperatur (Wärmesenke T = T_ref am äußeren Rand; Leitfähigkeit je Material) →
+  optional selbstkonsistent mit ε(T) = ε + (dε/dT)(T − T_ref) (`ThermoOptical2D`, Relaxation, Toleranz, Konvergenzverlauf) → optional Wärmespannung in ebener
+  Dehnung (Wärmeausdehnung α je Material aus dem Temperaturfeld, Schrumpfung des Drahts, Rand eingespannt oder frei). Fälle **Block** (ebene Dehnung) und
+  **Zylinder** (rotationssymmetrisch, `axis_tag`): Randbedingungen je Seite (frei, eingespannt, Symmetrie, Zug/Druck), lineare Temperaturänderung, Schrumpfung.
+  Ergebnis: Kennzahlen (absorbierte Leistung, Maximaltemperatur, größte Verschiebung und Von-Mises-Spannung, Dehnungsenergie), Feldkarten (T, |E|/E₀, u, σ-Komponenten,
+  Von Mises), Schnitte, verformtes Netz mit Überhöhung, Konvergenz. Eingebaute Prüfungen: Verschiebungen von Block und Zylinder gegen die geschlossene Lösung (gemessen
+  bis 1e-14 relativ), Temperatur des Drahts gegen die Linienquelle im quadratischen Senkengebiet (ΔT = P/(2πκ)·ln(1,0787 a/r); bei der Vorlage stimmen beide auf besser als 1 % überein).
+  Die Bibliothek wendet Temperatur und Schrumpfung als Eigendehnung in der Ebene an (ε*_zz = 0); das steht in der Info. Materialvorgaben sind grobe Richtwerte;
+  dε/dT der Vorlage ist ein Beispielwert. Nicht validiert gegen Literaturwerte für konkrete Nanodrähte, stationär, Materialdaten unabhängig von T, Optik auf dem
+  unverformten Netz. Neue Module `fem_thermo.py`, `fem_thermo_app.py`, `fem_thermo_worker.py`; Tests `tests/test_thermo.py`.
+* Neu: Modus **„3D-Strukturen“** (Seitenleiste; hpfem 0.5, `Scattering3D`, `Resonance3D`, `BandStructure3D`): (1) **Streuung** einer ebenen, x-polarisierten Welle
+  längs +z an einer Kugel (`box_with_ball`, gekrümmte Elemente) oder einem Würfel (`box`, an das Gitter angepasst) in einer PML-Box: Streu-, Absorptions- und
+  Extinktionsquerschnitt über `cross_sections`/`Surface3D.around_cells`, Effizienzen Q mit der **Mie-Reihe** (`mie_sphere`) als Referenz für die Kugel, Wellenlängendurchlauf
+  (Material je Wellenlänge ausgewertet), |E|² auf zwei Schnittebenen, optional das Viertelmodell (Spiegelsymmetrie, Faktor 4, wie Validierung C der Bibliothek).
+  (2) **Resonanzen** (Quasi-Normalmoden mit PML, λ, Q, Schnitte von |E|²; Material bei der Zielwellenlänge eingefroren). (3) **Bandstruktur** eines einfach kubischen
+  Kristalls (Kugel oder Würfel, reelle ε, Pfad Γ–X–M–R–Γ; die statischen Nullmoden bei Γ werden bis auf die zwei akustischen entfernt; Referenz: leeres Gitter).
+  Netzdarstellung als Schnitt, **Speicherschätzung** (`hpfem.estimate_memory`) vor jedem Lauf mit Warnung bei über 60 % des freien Hauptspeichers, einstellbare
+  Speichergrenze (der Worker bricht bei Überschreitung ab) und Zeitrichtwert. Neue Module `fem_threed.py`, `fem_threed_app.py`, `fem_threed_worker.py`, Tests
+  `tests/test_threed.py`. Gemessen (Wheel 0.5.0, nur SparseLU): Kugel n = 2, ka = 2, n = 2, p = 2, Viertelmodell: 18 264 Unbekannte, 72 s, Q_sca 4,90 gegen 4,77 (Mie, +2,7 %);
+  n = 1, p = 2: 2 526 Unbekannte, 2 s, +5 %; n = 2, p = 3 braucht 5,5 GB und über 2 min. Resonanzen ε = 12, n = 1, p = 2: 9 324 Unbekannte, 72 s (λ ≈ 715 nm, Q ≈ 12,6, nicht
+  validiert). Bandstruktur: das leere Gitter trifft bei X die exakten Werte (0,5 ×4, 1,118), aber ein k-Punkt kostet schon bei 2 936 Unbekannten 17 bis 75 s; die Bibliothek
+  meldet bei den Gittern ihrer Generatoren, dass gegenüberliegende Facetten weder gleich noch geschachtelt seien (Hinweis im Protokoll, die Rechnung ist trotzdem richtig).
+  Nicht dabei: Substrate und Schichtstapel in 3D, Ports in 3D, hp-adaptive Verfeinerung, Gmsh-Netze, 3D-Wärme und -Mechanik.
+
+* Neu: Modus **„Zeitbereich: Pulse, Sonden, Spektren“** (Seitenleiste; hpfem 0.5, `TimeDomain2D` und `TimeDomain3D`, Newmark-β, implizit): 2D-Schnitt (Rechteck mit den
+  Formen des Wellenleiter-Modus, E in der Ebene, je Meter in z) oder 3D-Kasten mit Kugel (`box_with_ball`, sehr grobes Netz, Grenze 30 000 Freiheitsgrade). Quelle: Gauß-
+  förmige Stromdichte mit Position, Größe und Polarisation; Zeitsignal modulierter Gauß-Puls (`modulated_gaussian`), Gauß-Puls (`gaussian_pulse`) oder Dauerstrich mit
+  weichem Einschalten (`TimeSignal` mit eigener Ableitung). Ränder je Seite PEC, absorbierend (Silver-Müller erster Ordnung) oder PMC; konstante reelle Materialien (bei λ₀
+  ausgewertet) mit Leitfähigkeit σ je Material, Verlust Im ε nur als σ (Umrechnung σ = ε₀ ω₀ Im ε wahlweise). Zeitschritt aus „Schritten je Periode der höchsten Frequenz“
+  (Voreinstellung 40) oder von Hand, Endzeit automatisch, Newmark-Parameter mit Stabilitätsprüfung (β ≥ (γ + ½)²/4), Hinweis auf den Phasenfehler (ω Δt)²/12. Ergebnisse:
+  Feldfilm (Schieber und Abspielen, feste oder je-Bild-Farbskala; 3D als Schnitt auf einem Gitter), Sonden E(t), Spektrum per FFT (Frequenz oder Wellenlänge, Hann-Fenster,
+  Übertragung |E|/|G′| der Quelle), Energie über der Zeit, Tabellen und CSV. Sechs Vorlagen. Neue Module `fem_time.py`, `fem_time_app.py`, `fem_time_worker.py`; der
+  Formeneditor des Wellenleiter-Moduls nimmt `bump` und `prefix` entgegen. Die Spektren sind nicht gegen eine Frequenzbereichsrechnung geprüft (getestet: Spitze der
+  Quelle bei λ₀, Laufzeit eines Pulses im Streifen auf 3 %, Energieerhaltung im PEC-Kasten, Dämpfung durch σ).
 * Neu: **Erweiterte Studien** (Modus „Studie“, Aufgabe Optimierung): Nebenbedingungen an Messgrößen (`optimize.constraints`, `hpfem.opt.OutcomeConstraint`,
   Verfahren bayesian) und an Parameter (`optimize.linear_constraints`, `hpfem.opt.LinearConstraint` auf dem Entwurfsraum, alle Verfahren), Mehrzieloptimierung
   (Verfahren `pareto`, `hpfem.opt.pareto_optimize` mit `objectives`, `maximize`, `ref_point`) und Mehrstufen-Optimierung (`multi_fidelity`, Stufen
