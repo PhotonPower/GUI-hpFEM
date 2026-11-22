@@ -2,6 +2,17 @@
 
 ## Unveröffentlicht
 
+* Neu: Modus **„Wärme und Mechanik (2D)“** (Seitenleiste; hpfem 0.5, `Thermal2D`, `ThermoOptical2D`, `Elasticity2D`). Fall **Nanodraht**: ebene Welle auf einen Draht
+  in verlustfreier Matrix (`square_with_disc`, PML) → absorbierte Leistung → Temperatur (Wärmesenke T = T_ref am äußeren Rand; Leitfähigkeit je Material) →
+  optional selbstkonsistent mit ε(T) = ε + (dε/dT)(T − T_ref) (`ThermoOptical2D`, Relaxation, Toleranz, Konvergenzverlauf) → optional Wärmespannung in ebener
+  Dehnung (Wärmeausdehnung α je Material aus dem Temperaturfeld, Schrumpfung des Drahts, Rand eingespannt oder frei). Fälle **Block** (ebene Dehnung) und
+  **Zylinder** (rotationssymmetrisch, `axis_tag`): Randbedingungen je Seite (frei, eingespannt, Symmetrie, Zug/Druck), lineare Temperaturänderung, Schrumpfung.
+  Ergebnis: Kennzahlen (absorbierte Leistung, Maximaltemperatur, größte Verschiebung und Von-Mises-Spannung, Dehnungsenergie), Feldkarten (T, |E|/E₀, u, σ-Komponenten,
+  Von Mises), Schnitte, verformtes Netz mit Überhöhung, Konvergenz. Eingebaute Prüfungen: Verschiebungen von Block und Zylinder gegen die geschlossene Lösung (gemessen
+  bis 1e-14 relativ), Temperatur des Drahts gegen die Linienquelle im quadratischen Senkengebiet (ΔT = P/(2πκ)·ln(1,0787 a/r); bei der Vorlage stimmen beide auf besser als 1 % überein).
+  Die Bibliothek wendet Temperatur und Schrumpfung als Eigendehnung in der Ebene an (ε*_zz = 0); das steht in der Info. Materialvorgaben sind grobe Richtwerte;
+  dε/dT der Vorlage ist ein Beispielwert. Nicht validiert gegen Literaturwerte für konkrete Nanodrähte, stationär, Materialdaten unabhängig von T, Optik auf dem
+  unverformten Netz. Neue Module `fem_thermo.py`, `fem_thermo_app.py`, `fem_thermo_worker.py`; Tests `tests/test_thermo.py`.
 * Neu: **Erweiterte Studien** (Modus „Studie“, Aufgabe Optimierung): Nebenbedingungen an Messgrößen (`optimize.constraints`, `hpfem.opt.OutcomeConstraint`,
   Verfahren bayesian) und an Parameter (`optimize.linear_constraints`, `hpfem.opt.LinearConstraint` auf dem Entwurfsraum, alle Verfahren), Mehrzieloptimierung
   (Verfahren `pareto`, `hpfem.opt.pareto_optimize` mit `objectives`, `maximize`, `ref_point`) und Mehrstufen-Optimierung (`multi_fidelity`, Stufen

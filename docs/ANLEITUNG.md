@@ -250,6 +250,24 @@ n_eff = 1,98555 gegen 1,98555 aus der Dispersionsgleichung des Schichtwellenleit
 isotrope Materialien, nur Ports links und rechts (keine Ports an den oberen und unteren Wänden), keine dreidimensionalen Ports (`PortModes3D`). Resonante Bauteile (Ringe, Koppler) sind
 nicht vorbereitet; sie brauchen feine Netze (Spalt und Steg aufgelöst) und viele Wellenlängen. Eine Vorlage dafür ist nicht mitgeliefert, weil ich eine Resonanz hier nicht nachgerechnet habe.
 
+## Wärme und Mechanik (Seitenleiste „Art des Modells“ → „Wärme und Mechanik (2D)“)
+Der Modus koppelt drei hpfem-Löser in zwei Dimensionen (Ergebnisse je Meter in der unendlichen Richtung). Reiter 1 wählt den Fall.
+
+* **Nanodraht: Optik → Wärme → Spannung.** Materialien (optische Daten wie sonst, dazu je Material Wärmeleitfähigkeit κ, E-Modul, Querkontraktion ν, Ausdehnung α und
+  das thermo-optische dε/dT), Draht und Matrix (die Matrix muss verlustfrei sein), Wellenlänge, Feldamplitude E₀ (die App zeigt die Intensität), Radius und Gebiet. Das
+  Gebiet ist ein Quadrat mit der PML außen; **dort sitzt auch die Wärmesenke T = T_ref**. Mit „selbstkonsistent“ rechnet die Bibliothek die Optik so oft neu, bis sich
+  die Temperatur um weniger als die Toleranz ändert (Reiter 3, Unterreiter „Konvergenz“). Mit „Wärmespannung berechnen“ folgt aus dem Temperaturfeld eine Rechnung der
+  Elastizität in ebener Dehnung (Rand eingespannt oder frei; Schrumpfung des Drahts optional).
+* **Block** und **Zylinder.** Abmessungen und Zellzahl, Randbedingungen je Seite (frei, eingespannt, Symmetrie, Zug/Druck mit Spannung in MPa; positiv = Zug), ΔT am Anfang
+  und Ende (linear dazwischen) und Schrumpfung des ganzen Körpers. Beim Zylinder ist die Achse r = 0 fest (u_r = 0), x ist r und y ist z.
+
+Reiter 2 setzt Ordnung und Rasterauflösung der Karten, Reiter 3 zeigt Kennzahlen mit den Prüfungen (Block und Zylinder mit Symmetrie links und unten gegen die geschlossene Lösung;
+Draht ohne Rückkopplung gegen die Linienquelle), Feldkarten, Schnitte und das verformte Netz mit wählbarer Überhöhung.
+
+Wichtig: Die Temperatur gilt für das gewählte Gebiet (in 2D wächst sie logarithmisch mit dem Abstand der Senke). Temperatur und Schrumpfung wirken als Eigendehnung in der
+Ebene (ε*_zz = 0), die Von-Mises-Spannung nimmt σ_zz = ν(σ_xx + σ_yy). Es gibt nur den stationären Fall, keine Konvektion und Strahlung, keine temperaturabhängigen Materialdaten
+außer ε(T), und die Optik rechnet auf dem unverformten Netz. Die Materialvorgaben sind grobe Richtwerte; die Vorlage „selbstkonsistent“ trägt ein Beispiel-dε/dT, keinen Messwert.
+
 ## Bandstruktur (Seitenleiste „Art des Modells“ → „Bandstruktur“)
 Der Modus rechnet die Bänder eines zweidimensionalen photonischen Kristalls mit `hpfem.BandStructure2D` (Floquet-Bloch-Eigenproblem der Einheitszelle). Reiter 1: Vorlage,
 Gitter (quadratisch oder hexagonal), Materialien mit reellem ε, Formen in der Zelle (Scheibe, Rechteck, Ring, Polygon; spätere überdecken frühere, Angaben relativ zur Zellmitte
