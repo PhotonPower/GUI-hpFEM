@@ -93,9 +93,13 @@ def _bump():
     S.td_ver += 1
 
 
-def render_threed(ctx):
-    """ctx: py, repo, work (Path), threads, lib, FEATS."""
+def render_threed(ctx, task=None):
+    """ctx: py, repo, work (Path), threads, lib, FEATS. `task`: Aufgabe, die beim Wechsel in diesen Seitenmodus voreingestellt wird (z. B. "ports")."""
     _init()
+    if task is not None and S.get("td_entry") != task and S.td_proc is None:
+        S.td_model["task"] = task
+        S.td_ver += 1
+    S.td_entry = task
     work = Path(ctx["work"]) / "threed"
     st.title("FEM-Modellwerkstatt: 3D-Strukturen")
     st.caption("Streuung (Kugel, Würfel, Zylinder, Quader, auch über Schichtstapeln, hp-adaptiv), Resonanzen, Bandstruktur eines kubischen Kristalls, Wellenleiter und Ports. "

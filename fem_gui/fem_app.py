@@ -215,12 +215,13 @@ MODES = {"periodic": "Periodische Struktur (Gitter, Metaoberfläche)", "axi": "R
          "study": "Studie: Optimierung, Rekonstruktion, UQ", "waveguide": "Wellenleiter und Ports", "bands": "Bandstruktur (photonischer Kristall)",
          "thermo": "Wärme und Mechanik (2D und 3D)",
          "threed": "3D-Strukturen (Kugel, Würfel, kubischer Kristall)",
+         "threed_wg": "3D-Wellenleiter und Ports (Streifen, Koppler, Ring)",
          "time": "Zeitbereich: Pulse, Sonden, Spektren"}
 app_mode = st.sidebar.radio("Art des Modells", list(MODES), format_func=MODES.get, key="app_mode",
                             help="Periodisch: Elementarzelle mit Bloch-Rändern, ebene Welle (Streuung, Beugung). Rotationskörper: Struktur mit "
                                  "Rotationssymmetrie um z (Mikrosäule, Kugel, Scheibe), Resonanzen und Emission eines Dipols. Studie: Optimierung, "
                                  "Parameterrekonstruktion und Unsicherheiten einer Gitterzelle mit dem Job-Runner der Bibliothek. Wellenleiter und Ports: Bauteil in der Chipebene "
-                                 "zwischen modalen Ports (S-Matrix) und Moden des Querschnitts. Wärme und Mechanik: absorbierte Leistung → Temperatur → Wärmespannung (2D und 3D: Draht, Kugel), auch selbstkonsistent, sowie Block, Zylinder und Quader unter Last. 3D-Strukturen: Streuung an Kugel oder Würfel, Resonanzen und kubische Bandstruktur mit den 3D-Lösern (speicherintensiv, mit Schätzung vor dem Lauf). Zeitbereich: Pulse und Dauerstrich mit Sonden, Spektren und Feldfilmen. Bandstruktur: Bänder und Lücken eines 2D-photonischen Kristalls (Floquet-Bloch). Emitter in einer Gitterzelle: im Modus „Periodische Struktur“ "
+                                 "zwischen modalen Ports (S-Matrix) und Moden des Querschnitts. Wärme und Mechanik: absorbierte Leistung → Temperatur → Wärmespannung (2D und 3D: Draht, Kugel), auch selbstkonsistent, sowie Block, Zylinder und Quader unter Last. 3D-Wellenleiter und Ports: Streifen, Richtkoppler, Ringresonator mit S-Matrix (Eintrag in der Seitenleiste springt direkt zur Aufgabe „Wellenleiter und Ports“). 3D-Strukturen: Streuung an Kugel oder Würfel, Resonanzen und kubische Bandstruktur mit den 3D-Lösern (speicherintensiv, mit Schätzung vor dem Lauf). Zeitbereich: Pulse und Dauerstrich mit Sonden, Spektren und Feldfilmen. Bandstruktur: Bänder und Lücken eines 2D-photonischen Kristalls (Floquet-Bloch). Emitter in einer Gitterzelle: im Modus „Periodische Struktur“ "
                                  "(Reiter 1 und Aufgabe „Emitter“).")
 if app_mode == "axi":
     fem_axi_app.sidebar_model()
@@ -490,6 +491,9 @@ if app_mode == "bands":
     st.stop()
 if app_mode == "thermo":
     fem_thermo_app.render_thermo(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
+    st.stop()
+if app_mode == "threed_wg":
+    fem_threed_app.render_threed(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS), task="ports")
     st.stop()
 if app_mode == "threed":
     fem_threed_app.render_threed(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))

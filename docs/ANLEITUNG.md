@@ -261,7 +261,7 @@ hp-Verfeinerung laufen wie bei den eingebauten Netzen; Q bezieht sich auf die Pr
 ausgewertet, markiert und h- oder p-verfeinert; die Startordnung p ist die kleinste. Reiter 3 „hp-Verfeinerung“: Diagramm η und Q_sca gegen Unbekannte, Tabelle je Schritt; Reiter „Netz“: Schnitt, auf Wunsch
 nach Ordnung gefärbt. η fällt, Q_sca konvergiert bei grobem PML nicht monoton (Kugel n = 2, ka = 2: η 0,133 → 0,042, Q_sca 4,51 → 4,44, Mie 4,77, in 16 s).
 
-**Wellenleiter und Ports (Aufgabe „Wellenleiter und Ports (S-Parameter)“):** Bauteil Streifenwellenleiter, Richtkoppler oder eigene Gmsh-Datei. Kern (Breite, Höhe), Länge, Rand, Materialien Kern und Mantel
+**Wellenleiter und Ports** (Seitenleiste „3D-Wellenleiter und Ports“ oder Modus „3D-Strukturen“ → Aufgabe „Wellenleiter und Ports (S-Parameter)“)**:** Bauteil Streifenwellenleiter, Richtkoppler oder eigene Gmsh-Datei. Kern (Breite, Höhe), Länge, Rand, Materialien Kern und Mantel
 (dispersiv auswertbar), beim Koppler Spalt und Portart (vier Halbflächen-Ports oder ein Port mit zwei Moden je Stirnfläche); Reiter 2: Wellenlängen, Zelle (und Zelle längs z, gröber spart viel), Ordnung,
 Anregung (Port und Mode), Feld der Anregung. Ergebnis: Transmission, Reflexion, Verlust (Leistungsbilanz, Fehler der Portnormierung), S-Matrix (|S|², Spalte = Anregung), n_eff der Portmoden mit feiner 2D-Referenz,
 beim Koppler cross, bar, Kopplungslänge nach der Theorie gekoppelter Moden (Netz der Rechnung und feines Referenznetz) sowie |E|² im Längs- und Querschnitt. Eigene Datei: Flächenmarken als PEC-Wand oder Port

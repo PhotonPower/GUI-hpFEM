@@ -429,3 +429,16 @@ def test_app_ports_task_and_results_without_exception(tmp_path):
     at.radio(key=f"p3_dev_{ver}").set_value("file").run()
     assert not at.exception, [e.value for e in at.exception]
     assert any("hochladen" in e.value for e in at.error)
+
+
+def test_sidebar_mode_threed_wg_opens_ports_task(tmp_path):
+    pytest.importorskip("hpfem")
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file(str(HERE / "fem_app.py"), default_timeout=180)
+    at.session_state["app_mode"] = "threed_wg"
+    at.session_state["work_dir"] = str(tmp_path)
+    at.run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["td_model"]["task"] == "ports"
+    assert any("3D-Wellenleiter" in o for o in at.sidebar.radio(key="app_mode").options)
