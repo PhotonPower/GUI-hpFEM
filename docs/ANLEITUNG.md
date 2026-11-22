@@ -227,6 +227,19 @@ die Polynomordnung erhöhen oder das Netz verfeinern. Die Position wird in Schri
 * *Rotationskörper.* Glaskugel (r = 300 nm) in Luft, axialer Dipol 150 nm über dem Pol, σ = 8 nm: der Weg über die Achse (Larmor-Normierung) gibt F_P = 1,067 (700 nm) und 1,119 (800 nm),
   der Weg der Bibliothek bei ρ = 0 F_z = 1,0687 und 1,1195: Abweichung 0,2 % und 0,04 %. Auf der Achse gilt F_ρ = F_φ und A_xz = 0; bei ρ = 200 nm liegt F_z (700 nm) bei 1,007.
 
+## 3D-Strukturen (Seitenleiste „Art des Modells“ → „3D-Strukturen“)
+Der Modus rechnet mit den dreidimensionalen Lösern der Bibliothek ein Objekt (Kugel oder Würfel, im Ursprung) in Luft. Reiter 1: Vorlage, Aufgabe, Form, Radius (bei
+dem Würfel die halbe Kante), Material des Objekts (alle Materialtypen der App ohne Kristalle). Reiter 2: Wellenlängen (Streuung), Zielwellenlänge und Modenzahl (Resonanzen) bzw.
+Pfad und Bänder (Bandstruktur), Netz (Zellen je Radius n, Innenraum und Außenrand in Radien, dazwischen das PML; n mal Innenraum und n mal Außenrand müssen ganzzahlig sein),
+Ordnung p und Speichergrenze. **„Netz prüfen und Speicher schätzen“** vernetzt das Modell und zeigt Zellen, Unbekannte, den Speicher der Bibliothek (`hpfem.estimate_memory`) und einen
+Zeitrichtwert, dazu einen Schnitt durch das Netz; erst danach lohnt „Rechnen“. Reiter 3: Streuung: Q_sca, Q_abs, Q_ext (Kugel mit der Mie-Reihe und der Abweichung in %), |E|² auf der
+x–z- und x–y-Ebene; Resonanzen: Tabelle λ, Q, Residuum und Feldschnitt je Mode; Bandstruktur: Diagramm f = ω a / (2π c) entlang Γ–X–M–R–Γ mit Lücken und dem leeren Gitter.
+
+Grenzen: Der Wheel hat nur den direkten Löser SparseLU (ein Thread); 18 000 Unbekannte brauchen etwa 70 s je Faktorisierung, 50 000 über zwei Minuten und mehrere GB. Das Viertelmodell
+(Haken „Viertelmodell“, nur für die x-polarisierte Welle längs z) spart einen Faktor 4 an Speicher. Mit n = 2, p = 2 liegt Q_sca der Kugel etwa 3 % neben der Mie-Reihe; die Warnung
+des Lösers, das PML sei unteraufgelöst, erscheint bei diesen groben Netzen im Protokoll (so auch in der Validierung der Bibliothek). Resonanzen frieren das Material bei der Zielwellenlänge
+ein und sind, wie die Bandstruktur, nicht gegen analytische Lösungen validiert; ein k-Punkt der Bandstruktur dauert schon bei sehr kleinen Netzen Sekunden bis eine Minute.
+
 ## Wellenleiter und Ports (Seitenleiste „Art des Modells“ → „Wellenleiter und Ports“)
 
 Ein zweidimensionales Bauteil in der Ebene (x, y), vier Reiter wie bei den anderen Modi. Reiter 1: Materialien (isotrop), Hintergrund (Mantel), Gebiet (Länge L in x, Breite B in y) und

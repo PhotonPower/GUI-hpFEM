@@ -13,6 +13,20 @@
   Die Bibliothek wendet Temperatur und Schrumpfung als Eigendehnung in der Ebene an (ε*_zz = 0); das steht in der Info. Materialvorgaben sind grobe Richtwerte;
   dε/dT der Vorlage ist ein Beispielwert. Nicht validiert gegen Literaturwerte für konkrete Nanodrähte, stationär, Materialdaten unabhängig von T, Optik auf dem
   unverformten Netz. Neue Module `fem_thermo.py`, `fem_thermo_app.py`, `fem_thermo_worker.py`; Tests `tests/test_thermo.py`.
+* Neu: Modus **„3D-Strukturen“** (Seitenleiste; hpfem 0.5, `Scattering3D`, `Resonance3D`, `BandStructure3D`): (1) **Streuung** einer ebenen, x-polarisierten Welle
+  längs +z an einer Kugel (`box_with_ball`, gekrümmte Elemente) oder einem Würfel (`box`, an das Gitter angepasst) in einer PML-Box: Streu-, Absorptions- und
+  Extinktionsquerschnitt über `cross_sections`/`Surface3D.around_cells`, Effizienzen Q mit der **Mie-Reihe** (`mie_sphere`) als Referenz für die Kugel, Wellenlängendurchlauf
+  (Material je Wellenlänge ausgewertet), |E|² auf zwei Schnittebenen, optional das Viertelmodell (Spiegelsymmetrie, Faktor 4, wie Validierung C der Bibliothek).
+  (2) **Resonanzen** (Quasi-Normalmoden mit PML, λ, Q, Schnitte von |E|²; Material bei der Zielwellenlänge eingefroren). (3) **Bandstruktur** eines einfach kubischen
+  Kristalls (Kugel oder Würfel, reelle ε, Pfad Γ–X–M–R–Γ; die statischen Nullmoden bei Γ werden bis auf die zwei akustischen entfernt; Referenz: leeres Gitter).
+  Netzdarstellung als Schnitt, **Speicherschätzung** (`hpfem.estimate_memory`) vor jedem Lauf mit Warnung bei über 60 % des freien Hauptspeichers, einstellbare
+  Speichergrenze (der Worker bricht bei Überschreitung ab) und Zeitrichtwert. Neue Module `fem_threed.py`, `fem_threed_app.py`, `fem_threed_worker.py`, Tests
+  `tests/test_threed.py`. Gemessen (Wheel 0.5.0, nur SparseLU): Kugel n = 2, ka = 2, n = 2, p = 2, Viertelmodell: 18 264 Unbekannte, 72 s, Q_sca 4,90 gegen 4,77 (Mie, +2,7 %);
+  n = 1, p = 2: 2 526 Unbekannte, 2 s, +5 %; n = 2, p = 3 braucht 5,5 GB und über 2 min. Resonanzen ε = 12, n = 1, p = 2: 9 324 Unbekannte, 72 s (λ ≈ 715 nm, Q ≈ 12,6, nicht
+  validiert). Bandstruktur: das leere Gitter trifft bei X die exakten Werte (0,5 ×4, 1,118), aber ein k-Punkt kostet schon bei 2 936 Unbekannten 17 bis 75 s; die Bibliothek
+  meldet bei den Gittern ihrer Generatoren, dass gegenüberliegende Facetten weder gleich noch geschachtelt seien (Hinweis im Protokoll, die Rechnung ist trotzdem richtig).
+  Nicht dabei: Substrate und Schichtstapel in 3D, Ports in 3D, hp-adaptive Verfeinerung, Gmsh-Netze, 3D-Wärme und -Mechanik.
+
 * Neu: **Erweiterte Studien** (Modus „Studie“, Aufgabe Optimierung): Nebenbedingungen an Messgrößen (`optimize.constraints`, `hpfem.opt.OutcomeConstraint`,
   Verfahren bayesian) und an Parameter (`optimize.linear_constraints`, `hpfem.opt.LinearConstraint` auf dem Entwurfsraum, alle Verfahren), Mehrzieloptimierung
   (Verfahren `pareto`, `hpfem.opt.pareto_optimize` mit `objectives`, `maximize`, `ref_point`) und Mehrstufen-Optimierung (`multi_fidelity`, Stufen
