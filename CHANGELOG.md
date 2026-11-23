@@ -2,6 +2,15 @@
 
 ## Unveröffentlicht
 
+* Neu (Vorbereitung hp-FEM M21, Issue #16): Modus **„Kreuzgitter (doppelt periodisch, Eingabemaske)“** (`fem_xgrating.py`, `fem_xgrating_app.py`). Perioden p_x, p_y; Einfallsmedium, Substrat;
+  Schichten von oben nach unten mit Dicke, Hintergrundmaterial und Formen (Kreis, Ellipse, Rechteck; Loch oder Säule mit Material, Mittelpunkt, Maßen); Einfall (λ oder Durchlauf, θ, φ,
+  Polarisation s/p); Aufsicht der Zelle und Seitenansicht des Stapels; Tabelle der ausbreitungsfähigen Ordnungen (m, n) in Reflexion und Transmission aus der Gittergleichung; Modell als JSON
+  speichern und laden; Vorlage „Lochgitter in Glas auf Glas“ (FourierGrating-Beispiel). Konvention wie hpfem: Stapelnormale z, periodisch in x und y. **Noch ohne Rechnung:** R, T und die
+  Energiebilanz bleiben leer, bis die Rechen-Schnittstelle mit hp-FEM M21 S2 feststeht. Tests: `tests/test_xgrating.py`.
+* Behoben: `load_model()` (periodische Struktur, Rotationskörper) stürzte bei fremden Materialangaben ohne `type` mit `KeyError 'type'` in `fem_materials.describe()` ab. Neu
+  `fem_materials.normalize_spec`: `{"n": 1.5}` bzw. `{"n": 1.5, "k": 0.01}` → `{"type": "index", "n": .., "k": ..}` (ebenso eine bloße Zahl, `{"eps": ..}`, `{"name": "Si"}`); nicht Umsetzbares
+  (negatives k, kein n, unbekannter Typ) und nicht definierte Materialien in Einfallsmedium, Substrat, Schichten oder Formen werden mit verständlicher Meldung abgelehnt. FourierGrating-Dateien
+  (`period_um`, `dimension`, `contour2d`) erkennt `load_model()` und verweist auf das Kreuzgitter; ihre Umsetzung liefert der Import in hpfem (M21 S3).
 * Neu: eigener Seitenleisten-Eintrag **„3D-Wellenleiter und Ports (Streifen, Koppler, Ring)“**; er öffnet den 3D-Modus direkt mit der Aufgabe „Wellenleiter und Ports“ (vorher nur über Modus „3D-Strukturen“ → Aufgabe erreichbar).
 * Neu: **Ringresonator in 3D** (Modus „3D-Strukturen“, Aufgabe „Wellenleiter und Ports“, Bauteil „Ringresonator (Add-Drop, Gmsh)“; hpfem 0.5, Vorlage nach
   `examples/ring_resonator_3d` der Bibliothek): Ring zwischen zwei geraden Zuleitungen gleichen Querschnitts (Parameter Ringradius, Breite, Höhe, Spalt, Ränder,

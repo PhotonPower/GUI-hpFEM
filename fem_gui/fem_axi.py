@@ -242,6 +242,11 @@ def load_model(text):
     m = json.loads(text)
     if m.get("kind") != "axi":
         raise ValueError("Kein Modell eines Rotationskörpers (kind = axi)")
+    for name, spec in list(m.get("materials", {}).items()):
+        try:
+            m["materials"][name] = fm.normalize_spec(spec)
+        except ValueError as exc:
+            raise ValueError(f"Material '{name}': {exc}") from exc
     base = default_model()
     complete(m)
     for k in ("domain", "resonance", "emitter"):

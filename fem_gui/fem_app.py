@@ -35,6 +35,7 @@ import fem_thermo_app  # noqa: E402
 import fem_threed_app  # noqa: E402
 import fem_time_app  # noqa: E402
 import fem_wg_app  # noqa: E402
+import fem_xgrating_app  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 S = st.session_state
@@ -42,7 +43,7 @@ st.set_page_config(page_title="FEM-Modellwerkstatt", layout="wide")
 
 # ---- all files of the app must come from the same version: name what is missing instead of a traceback
 _REQUIRED = {
-    "fem_materials.py": (fm, ["library_available", "eps_at", "nk", "describe", "valid_range", "LIBRARY", "is_crystal", "tensor_at", "principal_values"]),
+    "fem_materials.py": (fm, ["library_available", "eps_at", "nk", "describe", "valid_range", "LIBRARY", "is_crystal", "tensor_at", "principal_values", "normalize_spec"]),
     "fem_geometry.py": (fg, ["presets", "validate", "layout", "preview_figure", "mesh_figure", "build_mesh", "suggest_domain", "pml_plan", "shift_shapes",
                              "centering_shift", "shapes_x_extent", "material_index_map", "load_model", "new_shape", "parse_points", "shape_polygon", "reader_check"]),
     "fem_post.py": (fp, ["load_results", "results_dataframe", "fig_spectrum", "fig_pscan", "load_map", "derived", "fig_map", "fig_cut", "fig_absorption",
@@ -60,7 +61,7 @@ if _worker.is_file():
                "fem_emit_worker.py", "fem_wg.py", "fem_wg_app.py", "fem_wg_worker.py", "fem_disp.py", "fem_bands.py", "fem_bands_app.py", "fem_bands_worker.py", "fem_study_worker.py",
                "fem_thermo.py", "fem_thermo_app.py", "fem_thermo_worker.py", "fem_thermo3d.py", "fem_thermo3d_app.py", "fem_thermo3d_worker.py",
                "fem_threed.py", "fem_threed_app.py", "fem_threed_worker.py", "fem_threed_gmsh.py", "fem_ports3d.py", "fem_ports3d_app.py", "fem_ports3d_worker.py", "fem_ring3d_mesh.py",
-               "fem_time.py", "fem_time_app.py", "fem_time_worker.py"):
+               "fem_time.py", "fem_time_app.py", "fem_time_worker.py", "fem_xgrating.py", "fem_xgrating_app.py"):
         if not (HERE / _f).is_file():
             _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
     _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml", "GratingRun", "adaptive_grating_point",
@@ -216,12 +217,13 @@ MODES = {"periodic": "Periodische Struktur (Gitter, Metaoberfläche)", "axi": "R
          "thermo": "Wärme und Mechanik (2D und 3D)",
          "threed": "3D-Strukturen (Kugel, Würfel, kubischer Kristall)",
          "threed_wg": "3D-Wellenleiter und Ports (Streifen, Koppler, Ring)",
-         "time": "Zeitbereich: Pulse, Sonden, Spektren"}
+         "time": "Zeitbereich: Pulse, Sonden, Spektren",
+         "xgrating": "Kreuzgitter (doppelt periodisch, Eingabemaske)"}
 app_mode = st.sidebar.radio("Art des Modells", list(MODES), format_func=MODES.get, key="app_mode",
                             help="Periodisch: Elementarzelle mit Bloch-Rändern, ebene Welle (Streuung, Beugung). Rotationskörper: Struktur mit "
                                  "Rotationssymmetrie um z (Mikrosäule, Kugel, Scheibe), Resonanzen und Emission eines Dipols. Studie: Optimierung, "
                                  "Parameterrekonstruktion und Unsicherheiten einer Gitterzelle mit dem Job-Runner der Bibliothek. Wellenleiter und Ports: Bauteil in der Chipebene "
-                                 "zwischen modalen Ports (S-Matrix) und Moden des Querschnitts. Wärme und Mechanik: absorbierte Leistung → Temperatur → Wärmespannung (2D und 3D: Draht, Kugel), auch selbstkonsistent, sowie Block, Zylinder und Quader unter Last. 3D-Wellenleiter und Ports: Streifen, Richtkoppler, Ringresonator mit S-Matrix (Eintrag in der Seitenleiste springt direkt zur Aufgabe „Wellenleiter und Ports“). 3D-Strukturen: Streuung an Kugel oder Würfel, Resonanzen und kubische Bandstruktur mit den 3D-Lösern (speicherintensiv, mit Schätzung vor dem Lauf). Zeitbereich: Pulse und Dauerstrich mit Sonden, Spektren und Feldfilmen. Bandstruktur: Bänder und Lücken eines 2D-photonischen Kristalls (Floquet-Bloch). Emitter in einer Gitterzelle: im Modus „Periodische Struktur“ "
+                                 "zwischen modalen Ports (S-Matrix) und Moden des Querschnitts. Wärme und Mechanik: absorbierte Leistung → Temperatur → Wärmespannung (2D und 3D: Draht, Kugel), auch selbstkonsistent, sowie Block, Zylinder und Quader unter Last. 3D-Wellenleiter und Ports: Streifen, Richtkoppler, Ringresonator mit S-Matrix (Eintrag in der Seitenleiste springt direkt zur Aufgabe „Wellenleiter und Ports“). 3D-Strukturen: Streuung an Kugel oder Würfel, Resonanzen und kubische Bandstruktur mit den 3D-Lösern (speicherintensiv, mit Schätzung vor dem Lauf). Zeitbereich: Pulse und Dauerstrich mit Sonden, Spektren und Feldfilmen. Kreuzgitter: in x und y periodisches Loch- oder Säulengitter mit Schichten, Einfall und Tabelle der Beugungsordnungen (Eingabemaske, die Rechnung folgt mit hp-FEM M21). Bandstruktur: Bänder und Lücken eines 2D-photonischen Kristalls (Floquet-Bloch). Emitter in einer Gitterzelle: im Modus „Periodische Struktur“ "
                                  "(Reiter 1 und Aufgabe „Emitter“).")
 if app_mode == "axi":
     fem_axi_app.sidebar_model()
@@ -500,6 +502,9 @@ if app_mode == "threed":
     st.stop()
 if app_mode == "time":
     fem_time_app.render_time(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
+    st.stop()
+if app_mode == "xgrating":
+    fem_xgrating_app.render_xgrating(dict(py=py, repo=repo, work=work, threads=threads, lib=lib, FEATS=FEATS))
     st.stop()
 
 # ------------------------------------------------------------------------------------------------------------------ tabs
