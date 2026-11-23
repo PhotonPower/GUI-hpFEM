@@ -79,3 +79,20 @@ def test_adhesion_metals_match_hpfem():
     for name in ("Ti", "Cr"):
         e = hp.materials.get(name).eps_r(2 * 3.141592653589793 * 299792458 / 600e-9)
         assert fm.eps_at({"type": "library", "name": name}, 600) == pytest.approx(e, rel=1e-6)
+
+
+def test_normalize_foreign_specs():
+    assert fm.normalize_spec({"n": 1.5}) == {"type": "index", "n": 1.5, "k": 0.0}
+    assert fm.normalize_spec({"n": 1.5, "k": 0.01}) == {"type": "index", "n": 1.5, "k": 0.01}
+    assert fm.normalize_spec(1.0) == {"type": "index", "n": 1.0, "k": 0.0}
+    assert fm.normalize_spec({"eps": 2.25}) == {"type": "eps", "re": 2.25, "im": 0.0}
+    assert fm.normalize_spec({"name": "Si"}) == {"type": "library", "name": "Si"}
+    own = {"type": "eps", "re": 2.0, "im": 0.1}
+    assert fm.normalize_spec(own) is own
+    assert fm.describe(fm.normalize_spec({"n": 1.5})) == "n = 1.5, k = 0"
+
+
+@pytest.mark.parametrize("bad", [{"n": "x"}, {"n": -1.0}, {"n": 1.5, "k": -0.1}, {"foo": 1}, {"type": "magic"}, "Glas", None, {"n": float("nan")}])
+def test_normalize_rejects_readably(bad):
+    with pytest.raises(ValueError):
+        fm.normalize_spec(bad)

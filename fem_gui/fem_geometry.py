@@ -917,10 +917,33 @@ def save_model(model, path):
 
 
 def load_model(text):
+    """Reads a model of the periodic (1D) mode. Foreign material specs without "type" are normalised (``fem_materials.normalize_spec``); what
+    cannot be read or refers to undefined materials raises a ``ValueError`` with a readable message."""
     m = json.loads(text)
+    if not isinstance(m, dict):
+        raise ValueError("Kein Modell (JSON-Objekt erwartet)")
+    if m.get("kind") == "axi":
+        raise ValueError("Das ist ein Modell eines Rotationskörpers: im Modus „Rotationskörper“ laden")
+    if "dimension" in m or "period_um" in m or any(isinstance(l, dict) and "contour2d" in l for l in m.get("layers", [])):
+        raise ValueError("Das sieht nach einer FourierGrating-Datei aus (period_um, dimension, contour2d): sie ist 2D-periodisch und gehört in den "
+                         "Modelltyp „Kreuzgitter“, nicht in die 1D-periodische Struktur")
     base = default_model()
+    mats = m.get("materials")
+    if mats is not None:
+        if not isinstance(mats, dict):
+            raise ValueError("„materials“ muss ein Objekt {Name: Angabe} sein")
+        for name, spec in list(mats.items()):
+            try:
+                mats[name] = fm.normalize_spec(spec)
+            except ValueError as exc:
+                raise ValueError(f"Material '{name}': {exc}") from exc
     for k, v in base.items():
         m.setdefault(k, v)
     for k, v in base["domain"].items():
         m["domain"].setdefault(k, v)
+    names = m["materials"]
+    for what, mat in [("Einfallsmedium", m["cover"]), ("Substrat", m["substrate"])] + [(f"Schicht {i + 1}", l.get("material")) for i, l in enumerate(m["layers"])] + \
+                     [(f"Form {i + 1}", sh.get("material")) for i, sh in enumerate(m["shapes"])]:
+        if mat not in names:
+            raise ValueError(f"{what}: Material '{mat}' ist in „materials“ nicht definiert (vorhanden: {', '.join(names) or 'keine'})")
     return m

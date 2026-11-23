@@ -280,6 +280,48 @@ def nk(spec, lam_nm: float):
     return float(r.real), float(r.imag)
 
 
+KNOWN_TYPES = ("library", "index", "eps", "drude", "drude_lorentz", "table", "crystal")
+
+
+def normalize_spec(spec) -> dict:
+    """Bringt eine Materialangabe in das Format der Modellwerkstatt; ``ValueError`` mit verständlicher Meldung, wenn das nicht geht.
+
+    Fremde Angaben ohne ``type`` (z. B. aus FourierGrating) werden umgesetzt: ``{"n": 1.5}`` bzw. ``{"n": 1.5, "k": 0.01}`` →
+    ``{"type": "index", "n": 1.5, "k": 0.01}``, eine bloße Zahl ebenso (n), ``{"eps": 2.25}`` bzw. ``{"eps_re": .., "eps_im": ..}`` →
+    ``{"type": "eps", ...}``, ``{"name": "Si"}`` mit bekanntem Namen → Bibliothek. Angaben mit ``type`` bleiben unverändert (nur der Typ wird geprüft).
+    """
+    def num(v, what):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not np.isfinite(v):
+            raise ValueError(f"{what} muss eine endliche Zahl sein (gefunden: {v!r})")
+        return float(v)
+
+    if isinstance(spec, (int, float)) and not isinstance(spec, bool):
+        spec = {"n": spec}
+    if not isinstance(spec, dict):
+        raise ValueError(f"Materialangabe nicht lesbar: {spec!r}")
+    if "type" in spec:
+        if spec["type"] not in KNOWN_TYPES:
+            raise ValueError(f"unbekannter Materialtyp '{spec['type']}' (bekannt: {', '.join(KNOWN_TYPES)})")
+        return spec
+    if "n" in spec:
+        n, k = num(spec["n"], "n"), num(spec.get("k", 0.0), "k")
+        if n <= 0:
+            raise ValueError(f"n = {n:g}: der Brechungsindex muss positiv sein")
+        if k < 0:
+            raise ValueError(f"k = {k:g}: die Extinktion muss ≥ 0 sein (Konvention exp(−iωt), Verlust bedeutet k > 0)")
+        return {"type": "index", "n": n, "k": k}
+    if "eps" in spec or "eps_re" in spec:
+        e = spec.get("eps", spec.get("eps_re"))
+        if isinstance(e, dict):
+            re_, im_ = e.get("re"), e.get("im", 0.0)
+        else:
+            re_, im_ = e, spec.get("eps_im", 0.0)
+        return {"type": "eps", "re": num(re_, "Re ε"), "im": num(im_, "Im ε")}
+    if isinstance(spec.get("name"), str) and spec["name"] in LIBRARY:
+        return {"type": "library", "name": spec["name"]}
+    raise ValueError(f"Materialangabe ohne \"type\" und ohne \"n\" nicht umsetzbar (Schlüssel: {', '.join(map(str, spec)) or 'keine'})")
+
+
 def describe(spec) -> str:
     t = spec["type"]
     if t == "library":
