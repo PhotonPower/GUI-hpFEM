@@ -1,16 +1,21 @@
-"""Cross grating (doubly periodic) in the FEM model builder (Streamlit), input mask of hp-FEM M21. Called from fem_app.py: ``render_xgrating(ctx)``.
+"""Cross grating (doubly periodic) in the FEM model builder (Streamlit), hp-FEM M21. Called from fem_app.py: ``render_xgrating(ctx)``.
 
-Model, layers with holes and pillars, incidence, wavelength sweep and the table of diffraction orders. There is no computation yet: the solver
-interface follows with hp-FEM M21 S2 (PhotonPower/hp-FEM#237). Models and figures: fem_xgrating.py.
+Model, layers with holes and pillars, incidence, wavelength sweep, computation with ``hpfem.crossed`` (worker: fem_xgrating_worker.py), table of the
+diffraction orders (R, T per order (m, n), energy balance), convergence in p, s / p symmetry check, comparison with FourierGrating's
+``efficiencies.csv`` and import of FourierGrating models. Models, tables and figures: fem_xgrating.py.
 """
 from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import time
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
+import fem_run as fr
 import fem_ui as ui
 import fem_xgrating as fx
 
@@ -24,15 +29,27 @@ des Einfallsmediums, Säule: eigenes Material). Die Einheitszelle ist [0, p_x] �
 Nachbarn periodisch fort.
 
 **Einfall.** Wellenlänge im Vakuum, Polarwinkel θ gegen die Normale z, Azimut φ der Einfallsebene gegen x, Polarisation s (E senkrecht zur
-Einfallsebene) oder p. Zeitfaktor exp(−iωt). Die Reiter „Rechnung“ und die Spalten R und T der Ordnungstabelle sind noch leer: die Rechnung
-folgt mit der Schnittstelle der Bibliothek (hp-FEM M21).
+Einfallsebene; bei θ = 0, φ = 0 längs −y) oder p (E in der Einfallsebene; bei θ = 0, φ = 0 längs +x). Zeitfaktor exp(−iωt).
 
-**Ordnungen.** Die Tabelle zeigt, welche Beugungsordnungen (m, n) bei der gewählten Wellenlänge im Einfallsmedium (Reflexion) und im Substrat
-(Transmission) ausbreitungsfähig sind: k_t = k_t,ein + 2π (m / p_x, n / p_y), |k_t| < k₀ n. Die Energiebilanz ΣR + ΣT + A − 1 steht
-nach der Rechnung unter der Tabelle.
+**Rechnung.** `hpfem.crossed.solve`: Gmsh-Netz der Einheitszelle (gekrümmte Tetraeder, identische Netze auf gegenüberliegenden Seitenflächen), geschichteter
+Hintergrund, PML oben und unten, Bloch-Phasen in x und y; s und p aus einer Faktorisierung. Einfallsmedium und Substrat müssen verlustfreie Dielektrika sein. Die
+Kosten sind die Faktorisierung: das Lochgitter des Beispiels bei p = 3 hat rund 40 000 Unbekannte und braucht etwa eine Minute je Wellenlänge. Für eine
+**Konvergenztabelle** bleibt „Elemente je Wellenlänge“ fest (nicht 0) und p wächst.
+
+**Probe.** Energiebilanz ΣR + ΣT + A − 1 (verlustfrei ≈ 0). Symmetrie: bei vierzähliger Symmetrie des Lochs (Kreis, Quadrat in der Mitte der Zelle, gleiche Perioden)
+sind die Ergebnisse für s und p bei senkrechtem Einfall gleich (Reiter „Ergebnisse“, Anzeige „s“ und „p“). Schräger Einfall (θ, φ ≠ 0) setzt die Bloch-Phasen in
+beiden Richtungen.
+
+**Ordnungen.** Vor der Rechnung zeigt Reiter 2, welche Beugungsordnungen (m, n) bei der gewählten Wellenlänge im Einfallsmedium (Reflexion) und im Substrat
+(Transmission) ausbreitungsfähig sind: k_t = k_t,ein + 2π (m / p_x, n / p_y), |k_t| < k₀ n. Nach der Rechnung stehen R und T je Ordnung im Reiter 3.
+
+**Vergleich mit FourierGrating.** Die `efficiencies.csv` von FourierGrating (Spalten `lambda_um, phi_deg, psi_deg, delta_deg, side, n, m, efficiency`) lässt sich im
+Reiter 3 laden; die Ordnungen werden umbenannt (FourierGrating (n, m) längs (x, z) ist hier (m, n) = (n, −m)), δ = 0° gilt als s, δ = 90° als p. Der Import einer
+FourierGrating-Konfiguration (Reiter 1) läuft über `hpfem.fouriergrating` im Python mit hpfem (Rahmen, Schichtreihenfolge, ψ = −φ, p = −p): nur Lochgitter und Säulen
+aus Kreis, Ellipse, Polygon und Rechteck, konstante Materialien, δ = 0° oder 90°.
 
 **Austausch.** Das Modell lässt sich als JSON speichern und laden. Fremde Materialangaben ohne „type“ (z. B. {"n": 1.5}) werden beim Laden
-umgesetzt. FourierGrating-Dateien setzt der Import in hpfem um (y als Normale → z), nicht diese Seite.
+umgesetzt.
 """
 
 
@@ -40,7 +57,7 @@ def _init():
     if "xg_model" in S:
         return
     S.xg_model = copy.deepcopy(fx.default_model())
-    S.xg_ver = 0
+    S.xg_ver, S.xg_proc, S.xg_dir, S.xg_msg = 0, None, None, None
 
 
 def _bump():
@@ -55,18 +72,38 @@ def render_xgrating(ctx):
     """ctx: py, repo, work (Path), threads, lib, FEATS."""
     _init()
     st.title("FEM-Modellwerkstatt: Kreuzgitter (doppelt periodisch)")
-    st.caption("Lochgitter und Säulengitter, in x und y periodisch, mit Schichten, schrägem Einfall und Tabelle der Beugungsordnungen. "
-               "Eingabemaske ohne Rechnung (hp-FEM M21).")
-    t1, t2, t3 = st.tabs(["1 Modell", "2 Ordnungen und Ergebnisse", "3 Info"])
+    st.caption("Lochgitter und Säulengitter, in x und y periodisch, mit Schichten, schrägem Einfall und Tabelle der Beugungsordnungen (hpfem.crossed, hp-FEM M21).")
+    if S.xg_proc is not None:
+        return _running()
+    work = Path(ctx["work"]) / "xgrating"
+    t1, t2, t3, t4 = st.tabs(["1 Modell", "2 Rechnung", "3 Ergebnisse", "4 Info"])
     with t1:
-        _tab_model()
+        _tab_model(ctx, work)
     with t2:
-        _tab_orders()
+        _tab_run(ctx, work)
     with t3:
+        _tab_results(work)
+    with t4:
         st.markdown(INFO)
 
 
-def _tab_model():
+def _import_fg(ctx, work, up):
+    """FourierGrating file -> model (``fem_xgrating_worker.py --import`` in the Python with hpfem)."""
+    work.mkdir(parents=True, exist_ok=True)
+    src, dst = work / "fg_import.json", work / "fg_model.json"
+    src.write_bytes(up.getvalue())
+    if dst.exists():
+        dst.unlink()
+    r = subprocess.run([str(ctx["py"]), str(fr.HERE / "fem_xgrating_worker.py"), "--import", str(src), str(dst)], capture_output=True, text=True,
+                       cwd=str(work), env=fr.worker_env(ctx["repo"], 1), timeout=120)
+    if r.returncode != 0 or not dst.is_file():
+        lines = [ln for ln in (r.stdout + r.stderr).splitlines() if ln.startswith("ERROR")] or (r.stdout + r.stderr).strip().splitlines()[-3:]
+        raise ValueError("; ".join(ln.removeprefix("ERROR ") for ln in lines) or "unbekannter Fehler")
+    d = json.loads(dst.read_text(encoding="utf-8"))
+    return fx.load_model(json.dumps(d["model"])), d.get("notes", [])
+
+
+def _tab_model(ctx, work):
     m, ver = S.xg_model, S.xg_ver
     left, right = st.columns([6, 5])
     with left:
@@ -89,6 +126,20 @@ def _tab_model():
                 st.error(f"Datei nicht lesbar: {exc}")
         c[1].download_button("Modell speichern (JSON)", json.dumps(m, indent=1, ensure_ascii=False).encode("utf-8"), file_name="kreuzgitter.json",
                              mime="application/json", key="xg_save")
+        upf = st.file_uploader("FourierGrating-Konfiguration importieren (JSON, 2D)", type=["json"], key="xg_fg_upload",
+                               help="Über hpfem.fouriergrating im Python mit hpfem: Rahmen (FourierGrating: y ist die Normale), Schichtreihenfolge, ψ = −φ, p = −p. "
+                                    "Unterstützt: Lochgitter und Säulen aus Kreis, Ellipse, Polygon, Rechteck, konstante Materialien, δ = 0° oder 90°.")
+        if upf is not None and S.get("xg_fg_loaded") != (upf.name, upf.size):
+            S.xg_fg_loaded = (upf.name, upf.size)
+            try:
+                S.xg_model, notes = _import_fg(ctx, work, upf)
+                S.xg_imp_msg = "FourierGrating-Modell importiert." + "".join(f" {n}." for n in notes)
+                _bump()
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Import nicht möglich: {exc}")
+        if S.get("xg_imp_msg"):
+            st.success(S.xg_imp_msg)
         m["name"] = st.text_input("Name", value=m["name"], key=f"xg_name_{ver}")
         c = st.columns(2)
         m["period_x_nm"] = _num(c[0], "Periode p_x (nm)", f"xg_px_{ver}", m["period_x_nm"], 10.0, 1.0)
@@ -181,7 +232,17 @@ def _shape_editor(m, la, j, s, names, k):
         la["shapes"].pop(j)
         _bump()
         st.rerun()
-    c = st.columns(4)
+    if s["type"] == "polygon":
+        text = "\n".join(f"{p[0]:g}, {p[1]:g}" for p in s["points"])
+        new = st.text_area("Eckpunkte (x, y in nm, eine Zeile je Punkt)", value=text, key=f"{k}_pts", height=100)
+        try:
+            pts = [[float(v) for v in ln.replace(";", ",").split(",")[:2]] for ln in new.splitlines() if ln.strip()]
+            if all(len(p) == 2 for p in pts):
+                s["points"] = pts
+        except ValueError:
+            st.error("Die Punkte als „x, y“ eingeben.")
+        return
+    c = st.columns(5)
     s["cx"], s["cy"] = _num(c[0], "Mitte x (nm)", f"{k}_cx", s["cx"]), _num(c[1], "Mitte y (nm)", f"{k}_cy", s["cy"])
     if s["type"] == "circle":
         s["radius"] = _num(c[2], "Radius (nm)", f"{k}_r", s["radius"], 5.0, 0.0)
@@ -189,22 +250,176 @@ def _shape_editor(m, la, j, s, names, k):
         s["rx"], s["ry"] = _num(c[2], "Halbachse x (nm)", f"{k}_rx", s["rx"], 5.0, 0.0), _num(c[3], "Halbachse y (nm)", f"{k}_ry", s["ry"], 5.0, 0.0)
     else:
         s["wx"], s["wy"] = _num(c[2], "Breite x (nm)", f"{k}_wx", s["wx"], 5.0, 0.0), _num(c[3], "Breite y (nm)", f"{k}_wy", s["wy"], 5.0, 0.0)
+    if s["type"] != "circle":
+        s["angle"] = _num(c[4], "Drehung (°)", f"{k}_ang", s.get("angle", 0.0), 5.0, -360.0, 360.0, "Gegen den Uhrzeigersinn um die Mitte.")
 
 
-def _tab_orders():
-    m = S.xg_model
+def _tab_run(ctx, work):
+    m, ver = S.xg_model, S.xg_ver
     errs = [t for lvl, t in fx.validate(m) if lvl == "error"]
     for e in errs:
         st.error(e)
-    if errs:
-        return
+    me, cv = m["mesh"], m["convergence"]
+    st.subheader("Netz und Ordnung")
+    c = st.columns(3)
+    me["order"] = int(c[0].number_input("Ordnung p", 1, 6, int(me["order"]), key=f"xg_p_{ver}"))
+    me["elements_per_wavelength"] = _num(c[1], "Elemente je Wellenlänge (0 = automatisch)", f"xg_epw_{ver}", me["elements_per_wavelength"], 0.5, 0.0, 40.0,
+                                         "0: die Bibliothek wählt 8 / p je Wellenlänge im Material. Für Konvergenztabellen fest wählen (z. B. 2,5) und p erhöhen.")
+    cv["enabled"] = c[2].checkbox("Konvergenzstudie in p", value=bool(cv["enabled"]), key=f"xg_cv_{ver}",
+                                  help="Zusätzlich je eine Rechnung bei den genannten Ordnungen mit der ersten Wellenlänge (Tabelle und Bild im Reiter 3).")
+    if cv["enabled"]:
+        txt = st.text_input("Ordnungen der Studie (durch Komma getrennt)", value=", ".join(str(o) for o in cv["orders"]), key=f"xg_cvo_{ver}")
+        try:
+            cv["orders"] = sorted({int(v) for v in txt.replace(";", ",").split(",") if v.strip()})
+            if not cv["orders"] or min(cv["orders"]) < 1 or max(cv["orders"]) > 6:
+                st.error("Ordnungen zwischen 1 und 6 angeben.")
+                errs.append("Ordnungen")
+        except ValueError:
+            st.error("Ganze Zahlen angeben, z. B. 2, 3, 4.")
+            errs.append("Ordnungen")
+        if not me["elements_per_wavelength"]:
+            st.warning("Für eine Konvergenztabelle „Elemente je Wellenlänge“ fest wählen (nicht 0), sonst ändert sich mit p auch das Netz.")
     lams = fx.sweep_list(m["sweep"], m["incidence"])
-    lam = lams[0] if len(lams) == 1 else float(st.select_slider("Wellenlänge für die Ordnungstabelle (nm)", options=lams, value=lams[0], key="xg_order_lam"))
-    po = fx.propagating_orders(m, lam)
-    st.markdown(f"**λ = {lam:g} nm:** {len(po['R'])} Ordnung(en) in Reflexion, {len(po['T'])} in Transmission ausbreitungsfähig.")
-    rows = [{"m": r["m"], "n": r["n"], "Reflexion": "ja" if r["reflektiert"] else "–", "Transmission": "ja" if r["transmittiert"] else "–",
-             "R": None, "T": None} for r in fx.orders_table(m, lam)]
-    ui.table_show(pd.DataFrame(rows))
-    st.info("R und T je Ordnung und die Energiebilanz ΣR + ΣT + A − 1 erscheinen, sobald die Rechnung angebunden ist (hp-FEM M21, "
-            "Schnittstelle in PhotonPower/hp-FEM#237). Berechnen lässt sich hier noch nichts.")
-    st.download_button("Ordnungstabelle (CSV)", ui.csv_bytes(pd.DataFrame(rows)), file_name="ordnungen.csv", mime="text/csv", key="xg_csv")
+    n_runs = len(lams) + (len([o for o in cv["orders"] if o != me["order"]]) if cv["enabled"] else 0)
+    st.markdown(f"**{n_runs} Rechnung(en).** Jede ist eine volle Lösung mit Netz; das Lochgitter des Beispiels hat bei p = 3 etwa 40 000 Unbekannte und braucht rund eine Minute.")
+    if ctx["lib"].get("error"):
+        st.warning("Das eingestellte Python hat kein hpfem: Rechnen geht nicht, die Vorschau der Ordnungen unten schon.")
+    elif not ctx["FEATS"].get("crossed"):
+        st.warning("Das eingestellte hpfem kann keine Kreuzgitter rechnen: `hpfem.crossed` samt `OrderPlane` und `diffraction_orders` fehlt (hp-FEM M21, ab Stand "
+                   "von PhotonPower/hp-FEM#240; bei einem Quell-Build die Erweiterung neu bauen).")
+    if st.button("Rechnen", type="primary", key="xg_run", disabled=bool(errs) or bool(ctx["lib"].get("error")) or not ctx["FEATS"].get("crossed")):
+        try:
+            work.mkdir(parents=True, exist_ok=True)
+            (work / "job.json").write_text(json.dumps(fx.job(m), ensure_ascii=False), encoding="utf-8")
+            S.xg_proc = fr.start_worker(ctx["py"], ctx["repo"], work, int(ctx["threads"]), script="fem_xgrating_worker.py")
+            S.xg_dir, S.xg_cancel, S.xg_msg = str(work), False, None
+            S.xg_run_model = copy.deepcopy(m)
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Start fehlgeschlagen: {exc}")
+    if S.get("xg_msg"):
+        (st.success if S.xg_msg[0] == "ok" else st.error)(S.xg_msg[1] + " Die Ergebnisse stehen im Reiter 3.")
+    if (work / "log.txt").is_file():
+        with st.expander("Protokoll der letzten Rechnung"):
+            st.code(fr.read_log(work, tail=40))
+    if not errs or all(e == "Ordnungen" for e in errs):
+        st.subheader("Ausbreitungsfähige Ordnungen vor der Rechnung")
+        lam = lams[0] if len(lams) == 1 else float(st.select_slider("Wellenlänge (nm)", options=lams, value=lams[0], key="xg_order_lam"))
+        po = fx.propagating_orders(m, lam)
+        st.markdown(f"**λ = {lam:g} nm:** {len(po['R'])} Ordnung(en) in Reflexion, {len(po['T'])} in Transmission ausbreitungsfähig "
+                    "(Gittergleichung, ohne Rechnung).")
+        rows = [{"m": r["m"], "n": r["n"], "Reflexion": "ja" if r["reflektiert"] else "–", "Transmission": "ja" if r["transmittiert"] else "–"}
+                for r in fx.orders_table(m, lam)]
+        ui.table_show(pd.DataFrame(rows))
+
+
+def _running():
+    proc, folder = S.xg_proc, Path(S.xg_dir)
+    log = fr.read_log(folder)
+    st.subheader("Rechnung läuft …")
+    if proc.poll() is None:
+        frac, label = fr.progress_info(log)
+        st.progress(frac, text=label)
+        st.code("\n".join(log.splitlines()[-10:]) or "(noch keine Ausgabe)")
+        if S.get("xg_cancel"):
+            st.info("Abbruch angefordert: die Rechnung hält nach der laufenden Lösung an.")
+        elif st.button("Abbrechen", key="xg_cancel_btn"):
+            fr.request_cancel(folder)
+            S.xg_cancel = True
+            st.rerun()
+        time.sleep(1.5)
+        st.rerun()
+    else:
+        flags = fr.log_flags(log)
+        S.xg_proc = None
+        ok = proc.returncode == 0 and not flags["errors"]
+        S.xg_msg = ("ok", "Abgebrochen." if flags["cancelled"] else "Fertig.") if ok else ("error", f"Beendet mit Code {proc.returncode}: " + "; ".join(flags["errors"][:3]))
+        st.rerun()
+
+
+def _tab_results(work):
+    res_file = work / "results.json"
+    if not res_file.is_file():
+        st.info("Noch keine Ergebnisse: im Reiter 2 rechnen.")
+        return
+    res = json.loads(res_file.read_text(encoding="utf-8"))
+    pts = [p for p in res["points"] if "error" not in p]
+    for p in res["points"] + res.get("convergence", []):
+        if "error" in p:
+            st.error(f"λ = {p['lam_nm']:g} nm, p = {p.get('order', '?')}: {p['error']}")
+    meta = res["meta"]
+    st.caption(f"{meta.get('name', '')} · {len(pts)} Wellenlänge(n), p = {meta.get('order')}, θ = {meta['theta']:g}°, φ = {meta['phi']:g}°, "
+               f"Polarisation {meta['pol']} · hpfem {meta.get('hpfem', '?')} · Start {meta.get('started', '')}")
+    if not pts:
+        return
+    sub = st.tabs(["Ordnungen", "Spektrum", "Konvergenz", "s und p", "Vergleich mit FourierGrating"])
+    labels = [f"{p['lam_nm']:g} nm" for p in pts]
+    ref_up = None
+    with sub[4]:
+        ref_up = st.file_uploader("efficiencies.csv von FourierGrating", type=["csv"], key="xg_ref_upload",
+                                  help="Spalten lambda_um, phi_deg, psi_deg, delta_deg, side, n, m, efficiency. δ = 0° gilt als s, δ = 90° als p.")
+    with sub[0]:
+        k = int(st.selectbox("Wellenlänge", range(len(pts)), format_func=lambda i: labels[i], key="xg_res_lam")) if len(pts) > 1 else 0
+        df = fx.orders_dataframe(pts[k])
+        ui.table_show(df)
+        st.markdown(fx.balance_text(pts[k]))
+        st.caption(f"{pts[k]['dofs']} Unbekannte, {pts[k]['cells']} Zellen, {pts[k]['time_s']:.1f} s. R: im Einfallsmedium reflektiert, T: im Substrat transmittiert; "
+                   "nur ausbreitungsfähige Ordnungen. Ordnung (m, n): m längs x, n längs y.")
+        if pts[k].get("balance") is not None and abs(pts[k]["balance"]) > 0.01:
+            st.warning(f"Die Energiebilanz weicht um {pts[k]['balance']:+.3f} ab: p oder die Netzdichte erhöhen (Reiter 2).")
+        st.download_button("Tabelle (CSV)", ui.csv_bytes(df), file_name=f"ordnungen_{pts[k]['lam_nm']:g}nm.csv", mime="text/csv", key="xg_dl_orders")
+    with sub[1]:
+        sp = fx.spectrum_dataframe(pts)
+        if len(pts) > 1:
+            ui.show_fig(fx.fig_spectrum(pts), "kreuzgitter_spektrum.png", "xg_dl_spec")
+        ui.table_show(sp)
+        st.download_button("Spektrum (CSV)", ui.csv_bytes(sp), file_name="kreuzgitter_spektrum.csv", mime="text/csv", key="xg_dl_spec_csv")
+    ref = None
+    if ref_up is not None:
+        try:
+            ref = fx.read_fg_csv(ref_up.getvalue().decode("utf-8"), pts[0]["lam_nm"], meta["pol"], meta["theta"], meta["phi"])
+        except ValueError as exc:
+            with sub[4]:
+                st.error(str(exc))
+    with sub[2]:
+        conv = [c for c in res.get("convergence", []) if "error" not in c]
+        if not conv:
+            st.info("Keine Konvergenzstudie in dieser Rechnung (Reiter 2: „Konvergenzstudie in p“).")
+        else:
+            cdf = fx.convergence_dataframe(conv, ref)
+            if len(conv) > 1:
+                ui.show_fig(fx.fig_convergence(conv, ref), "kreuzgitter_konvergenz.png", "xg_dl_conv")
+            ui.table_show(cdf)
+            st.caption(f"Erste Wellenlänge ({pts[0]['lam_nm']:g} nm), Elemente je Wellenlänge "
+                       f"{'automatisch (8 / p)' if not meta.get('elements_per_wavelength') else meta['elements_per_wavelength']}. "
+                       "Mit der Datei von FourierGrating (Reiter „Vergleich“) kommt die Abweichung gegen die RCWA dazu.")
+    with sub[3]:
+        k = int(st.selectbox("Wellenlänge", range(len(pts)), format_func=lambda i: labels[i], key="xg_pol_lam")) if len(pts) > 1 else 0
+        dfs, dfp = fx.orders_dataframe(pts[k], "s"), fx.orders_dataframe(pts[k], "p")
+        c = st.columns(2)
+        with c[0]:
+            st.markdown("**s**")
+            ui.table_show(dfs)
+            st.markdown(fx.balance_text(pts[k], "s"))
+        with c[1]:
+            st.markdown("**p**")
+            ui.table_show(dfp)
+            st.markdown(fx.balance_text(pts[k], "p"))
+        rs, rp = {(r["m"], r["n"]): r for r in fx.order_rows(pts[k], "s")}, {(r["m"], r["n"]): r for r in fx.order_rows(pts[k], "p")}
+        diff = max((abs(rs.get(o, {"R": 0, "T": 0})[q] - rp.get(o, {"R": 0, "T": 0})[q]) for o in set(rs) | set(rp) for q in ("R", "T")), default=0.0)
+        st.markdown(f"Größte Abweichung zwischen s und p über alle Ordnungen: **{diff:.2e}**.")
+        st.caption("Beide Polarisationen stammen aus derselben Lösung. Bei senkrechtem Einfall und vierzähliger Symmetrie der Zelle (Kreis in der Mitte, p_x = p_y) "
+                   "müssen sie gleich sein; bei Ordnungen (m, n) ↔ (n, m) vertauschen sich s und p, die Summen bleiben gleich.")
+    with sub[4]:
+        if ref is None:
+            st.info("Datei laden, um die Ordnungen mit der RCWA zu vergleichen." if ref_up is None else "")
+        else:
+            cdf = fx.comparison_dataframe(pts[0], ref)
+            ui.table_show(cdf)
+            d = cdf["Δ = FEM − RCWA"].abs()
+            d_t0 = d[(cdf["Seite"] == "T") & (cdf["m"] == 0) & (cdf["n"] == 0)].max()
+            st.markdown(f"Größte Abweichung: **{d.max():.2e}**, T₀: {d_t0:.2e}. "
+                        f"(Erste Wellenlänge, {pts[0]['lam_nm']:g} nm; Ordnungen von FourierGrating (n, m) → (m, n) = (n, −m).)")
+            st.download_button("Vergleich (CSV)", ui.csv_bytes(cdf), file_name="vergleich_fourier_grating.csv", mime="text/csv", key="xg_dl_cmp")
+    st.download_button("Modell der Rechnung (JSON)", json.dumps(S.get("xg_run_model", S.xg_model), indent=1, ensure_ascii=False).encode("utf-8"),
+                       file_name="kreuzgitter_modell.json", mime="application/json", key="xg_dl_model")

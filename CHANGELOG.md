@@ -2,11 +2,20 @@
 
 ## Unveröffentlicht
 
+* Neu (hp-FEM M21 S4, Issue #16): **Kreuzgitter rechnen** mit `hpfem.crossed.solve` (`fem_xgrating_worker.py`, Reiter „2 Rechnung“ und „3 Ergebnisse“ des Modus „Kreuzgitter“).
+  Ein Aufruf je Wellenlänge (s und p aus einer Faktorisierung), Fortschritt und Abbruch über Log und `cancel`-Datei wie bei den anderen Modi. Ergebnisse: R und T je Ordnung (m, n),
+  ΣR, ΣT, Absorption und Energiebilanz ΣR + ΣT + A − 1, Spektrum, **Konvergenzstudie in p** (feste Elemente je Wellenlänge, Tabelle und Bild), **s/p-Gegenüberstellung** (Symmetrieprobe,
+  größte Abweichung) und **Vergleich mit `efficiencies.csv` von FourierGrating** (Ordnungen (n, m) → (m, n) = (n, −m), δ = 0° s und 90° p, ψ = −φ; Abweichung je Ordnung, über p in der
+  Konvergenztabelle). **Import einer FourierGrating-Konfiguration** über `hpfem.fouriergrating` im Python mit hpfem (`fem_xgrating_worker.py --import`): Rahmen, Schichtreihenfolge, p = −p, nur
+  δ = 0° oder 90°. Neu im Modell: Polygon, Drehung von Ellipse und Rechteck, Netz (p, Elemente je Wellenlänge), Konvergenzstudie; Prüfung: verlustfreie Halbräume, keine Kristalle.
+  Neues Merkmal `crossed` in der Bibliotheksprüfung (`fem_run.PROBE`: `hpfem.crossed`, `OrderPlane`, `diffraction_orders`); ohne es ist „Rechnen“ gesperrt und die Seite sagt warum.
+  Tests mit einem Ersatz für hpfem (`tests/test_xgrating.py`: Abbildung des Modells auf `CrossedGrating`, Einheiten, Fehler je Punkt, Abbruch, Tabellen, CSV-Vergleich).
+  **Nicht gelaufen:** eine echte Rechnung gegen die Bibliothek: der lokale Quell-Build von hp-FEM war älter als `OrderPlane` (Binding vom 23.11.), `solve` brach mit
+  „module 'hpfem' has no attribute 'OrderPlane'“ ab. Die Abnahme (Lochgitter gegen RCWA, C4-Symmetrie, schräger Einfall) steht damit noch aus.
 * Neu (Vorbereitung hp-FEM M21, Issue #16): Modus **„Kreuzgitter (doppelt periodisch, Eingabemaske)“** (`fem_xgrating.py`, `fem_xgrating_app.py`). Perioden p_x, p_y; Einfallsmedium, Substrat;
   Schichten von oben nach unten mit Dicke, Hintergrundmaterial und Formen (Kreis, Ellipse, Rechteck; Loch oder Säule mit Material, Mittelpunkt, Maßen); Einfall (λ oder Durchlauf, θ, φ,
   Polarisation s/p); Aufsicht der Zelle und Seitenansicht des Stapels; Tabelle der ausbreitungsfähigen Ordnungen (m, n) in Reflexion und Transmission aus der Gittergleichung; Modell als JSON
-  speichern und laden; Vorlage „Lochgitter in Glas auf Glas“ (FourierGrating-Beispiel). Konvention wie hpfem: Stapelnormale z, periodisch in x und y. **Noch ohne Rechnung:** R, T und die
-  Energiebilanz bleiben leer, bis die Rechen-Schnittstelle mit hp-FEM M21 S2 feststeht. Tests: `tests/test_xgrating.py`.
+  speichern und laden; Vorlage „Lochgitter in Glas auf Glas“ (FourierGrating-Beispiel). Konvention wie hpfem: Stapelnormale z, periodisch in x und y. Die Rechnung kam danach (nächster Eintrag). Tests: `tests/test_xgrating.py`.
 * Behoben: `load_model()` (periodische Struktur, Rotationskörper) stürzte bei fremden Materialangaben ohne `type` mit `KeyError 'type'` in `fem_materials.describe()` ab. Neu
   `fem_materials.normalize_spec`: `{"n": 1.5}` bzw. `{"n": 1.5, "k": 0.01}` → `{"type": "index", "n": .., "k": ..}` (ebenso eine bloße Zahl, `{"eps": ..}`, `{"name": "Si"}`); nicht Umsetzbares
   (negatives k, kein n, unbekannter Typ) und nicht definierte Materialien in Einfallsmedium, Substrat, Schichten oder Formen werden mit verständlicher Meldung abgelehnt. FourierGrating-Dateien

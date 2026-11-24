@@ -1,14 +1,16 @@
 """Doubly periodic cross grating ("Kreuzgitter") without hpfem and without Streamlit: model, validation, diffraction orders, figures.
 
-Input mask only (hp-FEM M21): there is no computation yet; the solver interface is fixed with hp-FEM M21 S2 and announced in PhotonPower/hp-FEM#237.
+Computation: ``fem_xgrating_worker.py`` runs ``hpfem.crossed.solve`` (hp-FEM M21 S2, PhotonPower/hp-FEM#237) in the Python that has hpfem; this module has
+the model, the job document, the tables, figures and the comparison with FourierGrating's ``efficiencies.csv``.
 
 Conventions (as in hpfem): the stack normal is z, the structure is periodic in x and y with the periods ``period_x_nm`` and ``period_y_nm``;
 the unit cell is [0, px] x [0, py]. Layers run from top to bottom (``cover`` above the first, ``substrate`` below the last). A layer has a
 background material and shapes (priority by order, later ones cover earlier ones) that lie in the xy plane:
 
 * ``circle``:  ``cx, cy, radius``
-* ``ellipse``: ``cx, cy, rx, ry`` (semi-axes along x and y)
-* ``rect``:    ``cx, cy, wx, wy`` (full widths along x and y)
+* ``ellipse``: ``cx, cy, rx, ry`` (semi-axes along x and y), ``angle`` (deg, as for rect)
+* ``rect``:    ``cx, cy, wx, wy`` (full widths along x and y), ``angle`` (deg, counter-clockwise about the centre, default 0)
+* ``polygon``: ``points`` ([[x, y], ...] in nm, in the cell frame)
 
 ``kind`` is ``hole`` or ``pillar``; both fill the region with ``material`` (a hole usually with the cover material, a pillar with its own),
 the kind only chooses the default material and the label. Lengths in nm. Incidence: wavelength in vacuum, polar angle theta from the normal z,
@@ -19,6 +21,8 @@ FourierGrating uses y as the stack normal; the conversion is done by the import 
 from __future__ import annotations
 
 import copy
+import csv
+import io
 import json
 import math
 
@@ -28,13 +32,14 @@ import fem_geometry as fg
 import fem_materials as fm
 
 KIND = "xgrating"
-SHAPES = {"circle": "Kreis", "ellipse": "Ellipse", "rect": "Rechteck"}
+SHAPES = {"circle": "Kreis", "ellipse": "Ellipse", "rect": "Rechteck", "polygon": "Polygon"}
 KINDS = {"hole": "Loch", "pillar": "Säule"}
 POLS = {"s": "s (E senkrecht zur Einfallsebene)", "p": "p (E in der Einfallsebene)"}
 DEFAULT_SHAPE = {
     "circle": dict(cx=250.0, cy=250.0, radius=125.0),
-    "ellipse": dict(cx=250.0, cy=250.0, rx=150.0, ry=100.0),
-    "rect": dict(cx=250.0, cy=250.0, wx=200.0, wy=200.0),
+    "ellipse": dict(cx=250.0, cy=250.0, rx=150.0, ry=100.0, angle=0.0),
+    "rect": dict(cx=250.0, cy=250.0, wx=200.0, wy=200.0, angle=0.0),
+    "polygon": dict(points=[[100.0, 100.0], [400.0, 100.0], [250.0, 400.0]]),
 }
 _SIZE_KEYS = ("radius", "rx", "ry", "wx", "wy")
 
@@ -43,7 +48,8 @@ _SIZE_KEYS = ("radius", "rx", "ry", "wx", "wy")
 def new_shape(kind_of_shape, material, kind="hole", period=(500.0, 500.0)):
     s = {"type": kind_of_shape, "kind": kind, "material": material}
     s.update(copy.deepcopy(DEFAULT_SHAPE[kind_of_shape]))
-    s["cx"], s["cy"] = period[0] / 2, period[1] / 2
+    if "cx" in s:
+        s["cx"], s["cy"] = period[0] / 2, period[1] / 2
     return s
 
 
@@ -58,6 +64,8 @@ def default_model():
                     "shapes": [{"type": "circle", "kind": "hole", "material": "Luft", "cx": 250.0, "cy": 250.0, "radius": 125.0}]}],
         "incidence": {"theta": 0.0, "phi": 0.0, "pol": "s", "wavelength_nm": 405.0},
         "sweep": {"mode": "single", "start": 380.0, "stop": 500.0, "n": 13},
+        "mesh": {"order": 3, "elements_per_wavelength": 0.0},
+        "convergence": {"enabled": False, "orders": [2, 3, 4]},
     }
 
 
@@ -121,7 +129,7 @@ def load_model(text):
             raise ValueError(f"Material '{name}': {exc}") from exc
     for k, v in base.items():
         m.setdefault(k, copy.deepcopy(v))
-    for k in ("incidence", "sweep"):
+    for k in ("incidence", "sweep", "mesh", "convergence"):
         for kk, vv in base[k].items():
             m[k].setdefault(kk, vv)
     for i, la in enumerate(m["layers"]):
@@ -139,14 +147,27 @@ def load_model(text):
 
 
 # ===================================================================================================================== validation
+def shape_outline(s, n=96):
+    """Outline of a shape as an (N, 2) array in nm (circle, ellipse and rectangle with the rotation ``angle``, polygon as given)."""
+    t = s["type"]
+    if t == "polygon":
+        return np.array(s["points"], dtype=float).reshape(-1, 2)
+    if t == "rect":
+        hx, hy = s["wx"] / 2, s["wy"] / 2
+        p = np.array([[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy]])
+    else:
+        rx, ry = (s["radius"], s["radius"]) if t == "circle" else (s["rx"], s["ry"])
+        a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        p = np.column_stack([rx * np.cos(a), ry * np.sin(a)])
+    ang = math.radians(s.get("angle", 0.0))
+    c, sn = math.cos(ang), math.sin(ang)
+    return p @ np.array([[c, sn], [-sn, c]]) + [s["cx"], s["cy"]]
+
+
 def shape_extent(s):
     """Half-widths (hx, hy) of the bounding box of a shape in nm."""
-    t = s["type"]
-    if t == "circle":
-        return s["radius"], s["radius"]
-    if t == "ellipse":
-        return s["rx"], s["ry"]
-    return s["wx"] / 2, s["wy"] / 2
+    p = shape_outline(s)
+    return float((p[:, 0].max() - p[:, 0].min()) / 2), float((p[:, 1].max() - p[:, 1].min()) / 2)
 
 
 def validate(m, lam_nm=None):
@@ -169,10 +190,22 @@ def validate(m, lam_nm=None):
             for k in _SIZE_KEYS:
                 if k in s and s[k] <= 0:
                     msgs.append(("error", f"Schicht {i + 1}, Form {j + 1}: '{k}' muss größer als 0 sein."))
-            if px > 0 and py > 0 and not any(k in s and s[k] <= 0 for k in _SIZE_KEYS):
+            bad = any(k in s and s[k] <= 0 for k in _SIZE_KEYS)
+            if s["type"] == "polygon":
+                try:
+                    pts = np.array(s["points"], dtype=float)
+                    if pts.ndim != 2 or pts.shape[1] != 2 or len(pts) < 3:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    msgs.append(("error", f"Schicht {i + 1}, Form {j + 1} (Polygon): mindestens 3 Punkte (x, y)."))
+                    bad = True
+            if px > 0 and py > 0 and not bad:
                 hx, hy = shape_extent(s)
                 if 2 * hx > px + 1e-9 or 2 * hy > py + 1e-9:
                     msgs.append(("warn", f"Schicht {i + 1}, Form {j + 1} ist größer als die Zelle und überlappt ihre periodischen Nachbarn."))
+    me = m.get("mesh", {})
+    if not 1 <= int(me.get("order", 3)) <= 6:
+        msgs.append(("error", "Ordnung p: 1 bis 6."))
     inc = m["incidence"]
     if not 0.0 <= inc["theta"] < 90.0:
         msgs.append(("error", "Der Polarwinkel θ muss in [0°, 90°) liegen."))
@@ -187,12 +220,20 @@ def validate(m, lam_nm=None):
         msgs.append(("error", "Die Wellenlänge muss größer als 0 sein."))
     elif not [x for x in msgs if x[0] == "error"]:
         for name in sorted(used_materials(m)):
+            if fm.is_crystal(m["materials"][name]):
+                msgs.append(("error", f"{name}: anisotrope Kristalle sind im Kreuzgitter nicht möglich."))
+                continue
             for lam in (min(lams), max(lams)):
                 try:
                     fm.eps_at(m["materials"][name], lam)
                 except Exception as exc:
                     msgs.append(("error", f"{name} bei {lam:g} nm: {exc}"))
                     break
+        if not [x for x in msgs if x[0] == "error"]:
+            for what, name in (("Einfallsmedium", m["cover"]), ("Substrat", m["substrate"])):
+                k = max(fm.nk(m["materials"][name], lam)[1] for lam in lams)
+                if k > 1e-9:
+                    msgs.append(("error", f"{what} '{name}' hat Verlust (k = {k:.3g}): beide Halbräume müssen verlustfreie Dielektrika sein."))
     return msgs
 
 
@@ -228,7 +269,7 @@ def orders_table(m, lam_nm):
 def fig_cell(m, layer=0, n_cells=1):
     """Top view of the unit cell of layer ``layer`` (shapes with their periodic images, n_cells x n_cells cells)."""
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Ellipse, Rectangle
+    from matplotlib.patches import Polygon, Rectangle
 
     px, py = m["period_x_nm"], m["period_y_nm"]
     la = m["layers"][layer]
@@ -236,14 +277,10 @@ def fig_cell(m, layer=0, n_cells=1):
     ax.add_patch(Rectangle((0, 0), px * n_cells, py * n_cells, facecolor=fg.material_color(m, la["material"]), edgecolor="none"))
     for s in la["shapes"]:
         col = fg.material_color(m, s["material"])
-        hx, hy = shape_extent(s)
+        out = shape_outline(s)
         for i in range(n_cells):
             for j in range(n_cells):
-                cx, cy = s["cx"] + i * px, s["cy"] + j * py
-                if s["type"] == "rect":
-                    ax.add_patch(Rectangle((cx - hx, cy - hy), 2 * hx, 2 * hy, facecolor=col, edgecolor="k", lw=0.6))
-                else:
-                    ax.add_patch(Ellipse((cx, cy), 2 * hx, 2 * hy, facecolor=col, edgecolor="k", lw=0.6))
+                ax.add_patch(Polygon(out + [i * px, j * py], closed=True, facecolor=col, edgecolor="k", lw=0.6))
     for i in range(n_cells + 1):
         ax.axvline(i * px, color="k", lw=0.8, ls="--" if i % n_cells else "-")
     for j in range(n_cells + 1):
@@ -283,5 +320,141 @@ def fig_stack(m):
     ax.set_xticks([])
     ax.set_ylabel("z (nm)")
     ax.set_title("Schichtstapel (oben: Einfall)", fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+# ===================================================================================================================== job and results
+def job(m):
+    """The job document of ``fem_xgrating_worker.py``: the model (nm, degrees) with the wavelengths and the options of the solver."""
+    out = {k: copy.deepcopy(m[k]) for k in ("name", "period_x_nm", "period_y_nm", "materials", "cover", "substrate", "layers", "incidence", "mesh")}
+    out["wavelengths_nm"] = sweep_list(m["sweep"], m["incidence"])
+    conv = m.get("convergence", {})
+    out["convergence_orders"] = sorted({int(o) for o in conv.get("orders", [])}) if conv.get("enabled") else []
+    return out
+
+
+def order_rows(point, pol=None):
+    """Rows (m, n, R, T) of one result point (propagating orders, sorted by |(m, n)|); ``pol`` "s" / "p": the other polarisation of the same solve."""
+    src = point["pols"][pol] if pol else point
+    both = {}
+    for r in src["rows"]:
+        both.setdefault((r["m"], r["n"]), {"m": r["m"], "n": r["n"], "R": 0.0, "T": 0.0})[r["side"]] = r["efficiency"]
+    return sorted(both.values(), key=lambda o: (o["m"] ** 2 + o["n"] ** 2, o["m"], o["n"]))
+
+
+def orders_dataframe(point, pol=None):
+    import pandas as pd
+
+    src = point["pols"][pol] if pol else point
+    rows = [{"m": f"{r['m']:d}", "n": f"{r['n']:d}", "R": r["R"], "T": r["T"]} for r in order_rows(point, pol)]       # m, n as text: one column type with the sum row
+    rows.append({"m": "Σ", "n": "", "R": src["R"], "T": src["T"]})
+    return pd.DataFrame(rows)
+
+
+def balance_text(point, pol=None):
+    src = point["pols"][pol] if pol else point
+    a = src.get("A")
+    if a is None:
+        return f"ΣR = {src['R']:.6f}, ΣT = {src['T']:.6f}; Absorption nicht ausgewertet."
+    return f"ΣR = {src['R']:.6f}, ΣT = {src['T']:.6f}, A = {a:.6f}; ΣR + ΣT + A − 1 = {src['balance']:+.2e}"
+
+
+def spectrum_dataframe(points):
+    import pandas as pd
+
+    rows = []
+    for p in points:
+        o = {(r["side"], r["m"], r["n"]): r["efficiency"] for r in p["rows"]}
+        rows.append({"λ (nm)": p["lam_nm"], "R₀": o.get(("R", 0, 0), 0.0), "T₀": o.get(("T", 0, 0), 0.0), "ΣR": p["R"], "ΣT": p["T"],
+                     "A": p.get("A"), "Bilanz": p.get("balance"), "Unbekannte": p.get("dofs"), "Zeit (s)": round(p.get("time_s", 0.0), 1)})
+    return pd.DataFrame(rows)
+
+
+def convergence_dataframe(conv, reference=None):
+    """Rows per polynomial order: R₀, T₀, ΣR, ΣT, balance, unknowns, time; ``reference``: {(side, m, n): efficiency} (RCWA) adds the maximum deviation."""
+    import pandas as pd
+
+    rows = []
+    for c in conv:
+        o = {(r["side"], r["m"], r["n"]): r["efficiency"] for r in c["rows"]}
+        row = {"p": c["order"], "R₀": o.get(("R", 0, 0), 0.0), "T₀": o.get(("T", 0, 0), 0.0), "ΣR": c["R"], "ΣT": c["T"], "Bilanz": c.get("balance"),
+               "Unbekannte": c.get("dofs"), "Zeit (s)": round(c.get("time_s", 0.0), 1)}
+        if reference:
+            keys = set(o) | set(reference)
+            row["max |Δ| gegen RCWA"] = max(abs(o.get(k, 0.0) - reference.get(k, 0.0)) for k in keys)
+            row["|Δ T₀|"] = abs(o.get(("T", 0, 0), 0.0) - reference.get(("T", 0, 0), 0.0))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def read_fg_csv(text, lam_nm, pol, theta=0.0, phi=0.0, tol_nm=0.5):
+    """FourierGrating's ``efficiencies.csv`` -> {(side, m, n): efficiency} of the rows that belong to this incidence, in the order labels of hpfem.
+
+    FourierGrating's columns are ``lambda_um, phi_deg, psi_deg, delta_deg, side, n, m, efficiency`` with phi = polar angle, psi = −azimuth,
+    delta 0 = s and 90 = p (FourierGrating's p is minus hpfem's p); its order (n, m) along (x, z) is (m, n) = (n, −m) here. ``ValueError`` if no row fits."""
+    out, seen = {}, set()
+    want_delta = 0.0 if pol == "s" else 90.0
+    for row in csv.DictReader(io.StringIO(text)):
+        try:
+            lam, th, psi, delta = (float(row[k]) for k in ("lambda_um", "phi_deg", "psi_deg", "delta_deg"))
+            side, n, mm, eff = row["side"].strip(), int(row["n"]), int(row["m"]), float(row["efficiency"])
+        except (KeyError, ValueError, AttributeError) as exc:
+            raise ValueError(f"Keine Datei im Format von FourierGrating (efficiencies.csv): {exc}") from exc
+        seen.add((round(lam * 1000.0, 3), th, psi, delta))
+        if abs(lam * 1000.0 - lam_nm) <= tol_nm and abs(th - theta) < 1e-6 and abs(((-psi - phi) + 180.0) % 360.0 - 180.0) < 1e-6 and abs(delta - want_delta) < 1e-6:
+            out[(side, n, -mm)] = out.get((side, n, -mm), 0.0) + eff
+    if not out:
+        raise ValueError(f"Keine Zeilen für λ = {lam_nm:g} nm, θ = {theta:g}°, φ = {phi:g}°, Polarisation {pol} in der Datei "
+                         f"(vorhanden: {', '.join(f'λ {a:g} nm, θ {b:g}°, ψ {c:g}°, δ {d:g}°' for a, b, c, d in sorted(seen)[:4])}{' …' if len(seen) > 4 else ''}).")
+    return out
+
+
+def comparison_dataframe(point, reference, pol=None):
+    """Table of the orders: FEM, RCWA (FourierGrating), difference; ``reference`` from ``read_fg_csv``."""
+    import pandas as pd
+
+    src = point["pols"][pol] if pol else point
+    fem = {(r["side"], r["m"], r["n"]): r["efficiency"] for r in src["rows"]}
+    rows = []
+    for key in sorted(set(fem) | set(reference), key=lambda k: (k[0] != "R", k[1] ** 2 + k[2] ** 2, k[1], k[2])):
+        a, b = fem.get(key, 0.0), reference.get(key, 0.0)
+        rows.append({"Seite": key[0], "m": key[1], "n": key[2], "FEM": a, "RCWA": b, "Δ = FEM − RCWA": a - b})
+    return pd.DataFrame(rows)
+
+
+def fig_spectrum(points):
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7, 3.6))
+    lam = [p["lam_nm"] for p in points]
+    o = [{(r["side"], r["m"], r["n"]): r["efficiency"] for r in p["rows"]} for p in points]
+    ax.plot(lam, [d.get(("R", 0, 0), 0.0) for d in o], "o-", ms=4, label="R₀")
+    ax.plot(lam, [d.get(("T", 0, 0), 0.0) for d in o], "s-", ms=4, label="T₀")
+    ax.plot(lam, [p["R"] for p in points], "--", label="ΣR")
+    ax.plot(lam, [p["T"] for p in points], "--", label="ΣT")
+    ax.set_xlabel("Wellenlänge (nm)")
+    ax.set_ylabel("Effizienz")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def fig_convergence(conv, reference=None):
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6.5, 3.6))
+    ps = [c["order"] for c in conv]
+    o = [{(r["side"], r["m"], r["n"]): r["efficiency"] for r in c["rows"]} for c in conv]
+    ax.plot(ps, [abs(c["balance"]) if c.get("balance") is not None else float("nan") for c in conv], "o-", label="|ΣR + ΣT + A − 1|")
+    if reference:
+        ax.plot(ps, [max(abs(d.get(k, 0.0) - reference.get(k, 0.0)) for k in set(d) | set(reference)) for d in o], "s-", label="max |Δ| gegen RCWA")
+        ax.plot(ps, [abs(d.get(("T", 0, 0), 0.0) - reference.get(("T", 0, 0), 0.0)) for d in o], "^-", label="|Δ T₀| gegen RCWA")
+    ax.set_yscale("log")
+    ax.set_xticks(ps)
+    ax.set_xlabel("Ordnung p")
+    ax.grid(alpha=0.3, which="both")
+    ax.legend(fontsize=8)
     fig.tight_layout()
     return fig
