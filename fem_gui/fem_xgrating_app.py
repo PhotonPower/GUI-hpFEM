@@ -405,11 +405,12 @@ def _tab_results(work):
             st.markdown("**p**")
             ui.table_show(dfp)
             st.markdown(fx.balance_text(pts[k], "p"))
-        rs, rp = {(r["m"], r["n"]): r for r in fx.order_rows(pts[k], "s")}, {(r["m"], r["n"]): r for r in fx.order_rows(pts[k], "p")}
-        diff = max((abs(rs.get(o, {"R": 0, "T": 0})[q] - rp.get(o, {"R": 0, "T": 0})[q]) for o in set(rs) | set(rp) for q in ("R", "T")), default=0.0)
-        st.markdown(f"Größte Abweichung zwischen s und p über alle Ordnungen: **{diff:.2e}**.")
+        d = fx.pol_difference(pts[k])
+        st.markdown(f"Abweichung der Summen: |ΔΣR| = **{d['sum_R']:.2e}**, |ΔΣT| = **{d['sum_T']:.2e}**. Größte Abweichung je Ordnung bei vertauschtem (m, n) ↔ (n, m): "
+                    f"**{d['swapped']:.2e}**; ohne Vertauschen: {d['plain']:.2e}.")
         st.caption("Beide Polarisationen stammen aus derselben Lösung. Bei senkrechtem Einfall und vierzähliger Symmetrie der Zelle (Kreis in der Mitte, p_x = p_y) "
-                   "müssen sie gleich sein; bei Ordnungen (m, n) ↔ (n, m) vertauschen sich s und p, die Summen bleiben gleich.")
+                   "sind die Summen gleich, und s bei (m, n) gleicht p bei (n, m) (E längs −y bzw. +x): die Ordnungen (1, 0) und (0, 1) tauschen die Rollen. "
+                   "Die Abweichung ist der Diskretisierungsfehler (sinkt mit p).")
     with sub[4]:
         if ref is None:
             st.info("Datei laden, um die Ordnungen mit der RCWA zu vergleichen." if ref_up is None else "")

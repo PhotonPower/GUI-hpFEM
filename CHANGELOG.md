@@ -10,8 +10,12 @@
   δ = 0° oder 90°. Neu im Modell: Polygon, Drehung von Ellipse und Rechteck, Netz (p, Elemente je Wellenlänge), Konvergenzstudie; Prüfung: verlustfreie Halbräume, keine Kristalle.
   Neues Merkmal `crossed` in der Bibliotheksprüfung (`fem_run.PROBE`: `hpfem.crossed`, `OrderPlane`, `diffraction_orders`); ohne es ist „Rechnen“ gesperrt und die Seite sagt warum.
   Tests mit einem Ersatz für hpfem (`tests/test_xgrating.py`: Abbildung des Modells auf `CrossedGrating`, Einheiten, Fehler je Punkt, Abbruch, Tabellen, CSV-Vergleich).
-  **Nicht gelaufen:** eine echte Rechnung gegen die Bibliothek: der lokale Quell-Build von hp-FEM war älter als `OrderPlane` (Binding vom 23.11.), `solve` brach mit
-  „module 'hpfem' has no attribute 'OrderPlane'“ ab. Die Abnahme (Lochgitter gegen RCWA, C4-Symmetrie, schräger Einfall) steht damit noch aus.
+  **Gerechnet** (hpfem 0.5.1, neu gebautes `_hpfem`, GUI-Worker): Lochgitter r = 125 nm, Periode 500 nm, d = 150 nm, λ = 405 nm, Luft/Glas n = 1,5, p-Polarisation, 2,5 Elemente je Wellenlänge,
+  gegen FourierGrating (RCWA, Nx = Nz = 20, `reference_rcwa_N20.csv`): größte Abweichung über alle Ordnungen und |ΔT₀|: p = 2: 1,6e-2, p = 3: 9,2e-4, p = 4: 2,9e-4 (T₀ = 0,8044 gegen 0,8041; R₀ = 0,02466
+  gegen 0,02468); beugende Ordnungen (±1, 0), (0, ±1), (±1, ±1) bei p = 4 bis 5,2e-5. Energiebilanz ΣR + ΣT − 1: 7,9e-3, −8,6e-4, 7,0e-5 (p = 2, 3, 4). s gegen p bei senkrechtem Einfall: Summen auf 4e-5 (ΣR) und 7e-5 (ΣT) gleich,
+  s bei (m, n) gleicht p bei (n, m) bis 2,9e-4 (p = 3). Schräger Einfall θ = 30°, φ = 20°, s, p = 3: Bilanz +9,3e-4; Ordnungen unsymmetrisch wie erwartet, 4 reflektierte und 11 transmittierte Ordnungen wie
+  in der Vorschau aus der Gittergleichung. Kosten (bei parallel laufendem Benchmark): 19 s (p = 2, 14 052 Unbekannte), 77 s (p = 3, 39 375), 192 s (p = 4, 84 504). Nicht gerechnet: Vergleich bei schrägem Einfall mit FourierGrating
+  (keine Referenzwerte), mehrere Wellenlängen, absorbierende Schichten.
 * Neu (Vorbereitung hp-FEM M21, Issue #16): Modus **„Kreuzgitter (doppelt periodisch, Eingabemaske)“** (`fem_xgrating.py`, `fem_xgrating_app.py`). Perioden p_x, p_y; Einfallsmedium, Substrat;
   Schichten von oben nach unten mit Dicke, Hintergrundmaterial und Formen (Kreis, Ellipse, Rechteck; Loch oder Säule mit Material, Mittelpunkt, Maßen); Einfall (λ oder Durchlauf, θ, φ,
   Polarisation s/p); Aufsicht der Zelle und Seitenansicht des Stapels; Tabelle der ausbreitungsfähigen Ordnungen (m, n) in Reflexion und Transmission aus der Gittergleichung; Modell als JSON

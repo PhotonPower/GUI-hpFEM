@@ -360,6 +360,19 @@ def balance_text(point, pol=None):
     return f"ΣR = {src['R']:.6f}, ΣT = {src['T']:.6f}, A = {a:.6f}; ΣR + ΣT + A − 1 = {src['balance']:+.2e}"
 
 
+def pol_difference(point):
+    """s against p of one solve: differences of the sums and the largest difference per order, plain and with (m, n) <-> (n, m) swapped (the C4 symmetry
+    of a square cell at normal incidence maps s at (m, n) to p at (n, m))."""
+    rs = {(r["m"], r["n"]): r for r in order_rows(point, "s")}
+    rp = {(r["m"], r["n"]): r for r in order_rows(point, "p")}
+    z = {"R": 0.0, "T": 0.0}
+    keys = set(rs) | set(rp)
+    sw = set(rs) | {(b, a) for a, b in rp}
+    return dict(sum_R=abs(point["pols"]["s"]["R"] - point["pols"]["p"]["R"]), sum_T=abs(point["pols"]["s"]["T"] - point["pols"]["p"]["T"]),
+                plain=max((abs(rs.get(o, z)[q] - rp.get(o, z)[q]) for o in keys for q in "RT"), default=0.0),
+                swapped=max((abs(rs.get((m, n), z)[q] - rp.get((n, m), z)[q]) for m, n in sw for q in "RT"), default=0.0))
+
+
 def spectrum_dataframe(points):
     import pandas as pd
 

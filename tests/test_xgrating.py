@@ -291,3 +291,11 @@ def test_validate_rejects_lossy_halfspace_and_crystal():
     m["materials"]["Kristall"] = {"type": "crystal", "kind": "uniaxial", "n_o": 1.5, "k_o": 0.0, "n_e": 1.6, "k_e": 0.0, "theta_deg": 0.0, "phi_deg": 0.0}
     m["layers"][0]["material"] = "Kristall"
     assert any("Kristalle" in t for lvl, t in fx.validate(m) if lvl == "error")
+
+
+def test_pol_difference_swaps_orders():
+    rows_s = [{"side": "T", "m": 0, "n": 0, "efficiency": 0.8}, {"side": "T", "m": 1, "n": 0, "efficiency": 0.1}]
+    rows_p = [{"side": "T", "m": 0, "n": 0, "efficiency": 0.8}, {"side": "T", "m": 0, "n": 1, "efficiency": 0.1}]
+    pt = {"pols": {"s": {"R": 0.1, "T": 0.9, "rows": rows_s}, "p": {"R": 0.1, "T": 0.9, "rows": rows_p}}}
+    d = fx.pol_difference(pt)
+    assert d["swapped"] == 0.0 and d["plain"] == pytest.approx(0.1) and d["sum_T"] == 0.0
