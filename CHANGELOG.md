@@ -2,6 +2,7 @@
 
 ## Unveröffentlicht
 
+* Neu: **Nahfeld des Kreuzgitters** (Reiter 3 „Nahfeld“): |E|²/|E₀|² (Gesamtfeld, |E₀| = 1) über `CrossedResult.field` auf einer xy-, xz- und yz-Ebene. Schnittlagen und Punktzahl stellt man im Reiter 2 ein (Standard: Zellmitte, Mitte der ersten Schicht). Schichtgrenzen und Formen sind eingezeichnet, je Wellenlänge entsteht `field_<i>.npz`, nur bei der Hauptrechnung. An einem echten Lauf getestet (p = 2, 9212 Unbekannte), noch nicht gegen einen Referenzwert geprüft.
 * Neu (hp-FEM M21 S4, Issue #16): **Kreuzgitter rechnen** mit `hpfem.crossed.solve` (`fem_xgrating_worker.py`, Reiter „2 Rechnung“ und „3 Ergebnisse“ des Modus „Kreuzgitter“).
   Ein Aufruf je Wellenlänge (s und p aus einer Faktorisierung), Fortschritt und Abbruch über Log und `cancel`-Datei wie bei den anderen Modi. Ergebnisse: R und T je Ordnung (m, n),
   ΣR, ΣT, Absorption und Energiebilanz ΣR + ΣT + A − 1, Spektrum, **Konvergenzstudie in p** (feste Elemente je Wellenlänge, Tabelle und Bild), **s/p-Gegenüberstellung** (Symmetrieprobe,

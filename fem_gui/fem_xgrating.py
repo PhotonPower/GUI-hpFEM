@@ -66,6 +66,7 @@ def default_model():
         "sweep": {"mode": "single", "start": 380.0, "stop": 500.0, "n": 13},
         "mesh": {"order": 3, "elements_per_wavelength": 0.0},
         "convergence": {"enabled": False, "orders": [2, 3, 4]},
+        "field": {"enabled": False, "resolution": 80, "x_nm": None, "y_nm": None, "z_nm": None},
     }
 
 
@@ -129,7 +130,7 @@ def load_model(text):
             raise ValueError(f"Material '{name}': {exc}") from exc
     for k, v in base.items():
         m.setdefault(k, copy.deepcopy(v))
-    for k in ("incidence", "sweep", "mesh", "convergence"):
+    for k in ("incidence", "sweep", "mesh", "convergence", "field"):
         for kk, vv in base[k].items():
             m[k].setdefault(kk, vv)
     for i, la in enumerate(m["layers"]):
@@ -331,7 +332,29 @@ def job(m):
     out["wavelengths_nm"] = sweep_list(m["sweep"], m["incidence"])
     conv = m.get("convergence", {})
     out["convergence_orders"] = sorted({int(o) for o in conv.get("orders", [])}) if conv.get("enabled") else []
+    fl = m.get("field", {})
+    if fl.get("enabled"):
+        out["field"] = field_planes(m)
     return out
+
+
+def layer_z_ranges(m):
+    """[(z_top, z_bottom)] in nm of each layer; z = 0 is the top of the stack, the layers go downwards (negative z)."""
+    z, out = 0.0, []
+    for la in m["layers"]:
+        out.append((z, z - float(la["thickness_nm"])))
+        z -= float(la["thickness_nm"])
+    return out
+
+
+def field_planes(m):
+    """The cut planes of the near field in nm: the cell centre unless set, z in the middle of the first layer; ``resolution`` points along x."""
+    fl = m.get("field", {})
+    px, py = float(m["period_x_nm"]), float(m["period_y_nm"])
+    zr = layer_z_ranges(m)
+    pick = lambda v, d: float(d if v is None else v)  # noqa: E731
+    return dict(resolution=int(fl.get("resolution", 80)), x_nm=pick(fl.get("x_nm"), px / 2), y_nm=pick(fl.get("y_nm"), py / 2),
+                z_nm=pick(fl.get("z_nm"), (zr[0][0] + zr[0][1]) / 2 if zr else 0.0))
 
 
 def order_rows(point, pol=None):
@@ -469,5 +492,34 @@ def fig_convergence(conv, reference=None):
     ax.set_xlabel("Ordnung p")
     ax.grid(alpha=0.3, which="both")
     ax.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def fig_field(npz, key, m, title="", pol_label=""):
+    """|E|²/|E₀|² on a cut plane of the cell (``npz``: xs, ys, zs and the planes xy, xz, yz from the worker). The layer boundaries (xz, yz) and the shapes (xy) are drawn."""
+    import matplotlib.pyplot as plt
+
+    f = np.asarray(npz[key], dtype=float)
+    pl = {"xy": ("xs", "ys", "x", "y"), "xz": ("xs", "zs", "x", "z"), "yz": ("ys", "zs", "y", "z")}[key]
+    a, b = np.asarray(npz[pl[0]]), np.asarray(npz[pl[1]])
+    fig, ax = plt.subplots(figsize=(5.4, 4.8) if key == "xy" else (5.6, 4.2))
+    im = ax.pcolormesh(a * 1e9, b * 1e9, f.T, shading="auto", cmap="inferno")
+    fig.colorbar(im, ax=ax, label="|E|² / |E₀|²")
+    if key == "xy":
+        z = float(np.asarray(npz["z_nm"]))
+        for (top, bot), la in zip(layer_z_ranges(m), m["layers"]):
+            if bot <= z <= top:
+                for s in la["shapes"]:
+                    o = shape_outline(s)
+                    ax.plot(np.append(o[:, 0], o[0, 0]), np.append(o[:, 1], o[0, 1]), "w--", lw=0.9)
+        ax.set_aspect("equal")
+    else:
+        for top, bot in layer_z_ranges(m):
+            for z in (top, bot):
+                ax.axhline(z, color="w", ls="--", lw=0.8)
+    ax.set_xlabel(f"{pl[2]} (nm)")
+    ax.set_ylabel(f"{pl[3]} (nm)")
+    ax.set_title(title, fontsize=9)
     fig.tight_layout()
     return fig

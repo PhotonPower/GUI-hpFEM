@@ -12,6 +12,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -279,6 +280,18 @@ def _tab_run(ctx, work):
             errs.append("Ordnungen")
         if not me["elements_per_wavelength"]:
             st.warning("Für eine Konvergenztabelle „Elemente je Wellenlänge“ fest wählen (nicht 0), sonst ändert sich mit p auch das Netz.")
+    fl = m["field"]
+    fl["enabled"] = st.checkbox("Nahfeld |E|² auf Schnittebenen speichern", value=bool(fl["enabled"]), key=f"xg_fe_{ver}",
+                                help="Nach jeder Rechnung wird |E|²/|E₀|² (Gesamtfeld, Einfall mit Betrag 1) auf einer xy-, xz- und yz-Ebene ausgewertet (Reiter 3, „Nahfeld“).")
+    if fl["enabled"]:
+        pl = fx.field_planes(m)
+        c = st.columns(4)
+        fl["resolution"] = int(c[0].number_input("Punkte je Ebene (längs x)", 20, 300, int(fl["resolution"]), 10, key=f"xg_fr_{ver}"))
+        fl["x_nm"] = _num(c[1], "Schnitt yz bei x (nm)", f"xg_fx_{ver}", pl["x_nm"], 10.0, 0.0, m["period_x_nm"])
+        fl["y_nm"] = _num(c[2], "Schnitt xz bei y (nm)", f"xg_fy_{ver}", pl["y_nm"], 10.0, 0.0, m["period_y_nm"])
+        fl["z_nm"] = _num(c[3], "Schnitt xy bei z (nm)", f"xg_fz_{ver}", pl["z_nm"], 10.0, -1e5, 1e5,
+                          "z = 0 ist die Oberkante der Schichten, die Schichten liegen bei negativem z. Standard: Mitte der ersten Schicht.")
+        st.caption("Die Auswertung der Punkte kostet je Wellenlänge zusätzlich Zeit (drei Ebenen); bei vielen Wellenlängen die Punktzahl klein halten.")
     lams = fx.sweep_list(m["sweep"], m["incidence"])
     n_runs = len(lams) + (len([o for o in cv["orders"] if o != me["order"]]) if cv["enabled"] else 0)
     st.markdown(f"**{n_runs} Rechnung(en).** Jede ist eine volle Lösung mit Netz; das Lochgitter des Beispiels hat bei p = 3 etwa 40 000 Unbekannte und braucht rund eine Minute.")
@@ -337,6 +350,28 @@ def _running():
         st.rerun()
 
 
+def _field_tab(work, pts, labels, meta):
+    withf = [i for i, p in enumerate(pts) if p.get("field_file") and (work / p["field_file"]).is_file()]
+    for p in pts:
+        if p.get("field_error"):
+            st.error(f"Nahfeld bei {p['lam_nm']:g} nm: {p['field_error']}")
+    if not withf:
+        st.info("Kein Nahfeld in dieser Rechnung: im Reiter 2 „Nahfeld |E|² auf Schnittebenen speichern“ ankreuzen und neu rechnen.")
+        return
+    i = withf[int(st.selectbox("Wellenlänge", range(len(withf)), format_func=lambda j: labels[withf[j]], key="xg_fld_lam"))] if len(withf) > 1 else withf[0]
+    model = S.get("xg_run_model") or S.xg_model
+    npz = np.load(work / pts[i]["field_file"])
+    title = f"|E|²/|E₀|², λ = {pts[i]['lam_nm']:g} nm, Polarisation {meta['pol']}, θ = {meta['theta']:g}°"
+    names = {"xy": f"xy bei z = {float(npz['z_nm']):g} nm", "xz": f"xz bei y = {float(npz['y_nm']):g} nm", "yz": f"yz bei x = {float(npz['x_nm']):g} nm"}
+    c = st.columns(3)
+    for col, key in zip(c, ("xy", "xz", "yz")):
+        with col:
+            st.markdown(f"**{names[key]}**")
+            ui.show_fig(fx.fig_field(npz, key, model), f"nahfeld_{key}.png", f"xg_dl_fld_{key}")
+    st.caption(title + ". Gesamtfeld (einfallendes plus gestreutes) für eine einfallende Welle mit |E₀| = 1; weiße gestrichelte Linien: Schichtgrenzen bzw. Formen. "
+               "z = 0 ist die Oberkante der Schichten. Nur bei der Hauptrechnung (nicht in der Konvergenzstudie) gespeichert. Außerhalb des Netzes (weit über/unter dem Gitter) bleibt die Ebene leer.")
+
+
 def _tab_results(work):
     res_file = work / "results.json"
     if not res_file.is_file():
@@ -352,7 +387,7 @@ def _tab_results(work):
                f"Polarisation {meta['pol']} · hpfem {meta.get('hpfem', '?')} · Start {meta.get('started', '')}")
     if not pts:
         return
-    sub = st.tabs(["Ordnungen", "Spektrum", "Konvergenz", "s und p", "Vergleich mit FourierGrating"])
+    sub = st.tabs(["Ordnungen", "Spektrum", "Konvergenz", "s und p", "Vergleich mit FourierGrating", "Nahfeld"])
     labels = [f"{p['lam_nm']:g} nm" for p in pts]
     ref_up = None
     with sub[4]:
@@ -411,6 +446,8 @@ def _tab_results(work):
         st.caption("Beide Polarisationen stammen aus derselben Lösung. Bei senkrechtem Einfall und vierzähliger Symmetrie der Zelle (Kreis in der Mitte, p_x = p_y) "
                    "sind die Summen gleich, und s bei (m, n) gleicht p bei (n, m) (E längs −y bzw. +x): die Ordnungen (1, 0) und (0, 1) tauschen die Rollen. "
                    "Die Abweichung ist der Diskretisierungsfehler (sinkt mit p).")
+    with sub[5]:
+        _field_tab(work, pts, labels, meta)
     with sub[4]:
         if ref is None:
             st.info("Datei laden, um die Ordnungen mit der RCWA zu vergleichen." if ref_up is None else "")
