@@ -190,6 +190,11 @@ try:
         feats["pv"] = hasattr(_pv, "depth_profile")
     except Exception:
         feats["pv"] = False
+    try:
+        import hpfem.crossed as _cg
+        feats["crossed"] = hasattr(_cg, "solve") and hasattr(hpfem, "OrderPlane") and hasattr(hpfem, "diffraction_orders")      # M21: crossed gratings in 3D
+    except Exception:
+        feats["crossed"] = False
     feats["progress"] = hasattr(hpfem, "ProgressEvent")
     feats["memory"] = hasattr(hpfem, "estimate_memory")
     try:

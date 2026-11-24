@@ -61,7 +61,7 @@ if _worker.is_file():
                "fem_emit_worker.py", "fem_wg.py", "fem_wg_app.py", "fem_wg_worker.py", "fem_disp.py", "fem_bands.py", "fem_bands_app.py", "fem_bands_worker.py", "fem_study_worker.py",
                "fem_thermo.py", "fem_thermo_app.py", "fem_thermo_worker.py", "fem_thermo3d.py", "fem_thermo3d_app.py", "fem_thermo3d_worker.py",
                "fem_threed.py", "fem_threed_app.py", "fem_threed_worker.py", "fem_threed_gmsh.py", "fem_ports3d.py", "fem_ports3d_app.py", "fem_ports3d_worker.py", "fem_ring3d_mesh.py",
-               "fem_time.py", "fem_time_app.py", "fem_time_worker.py", "fem_xgrating.py", "fem_xgrating_app.py"):
+               "fem_time.py", "fem_time_app.py", "fem_time_worker.py", "fem_xgrating.py", "fem_xgrating_app.py", "fem_xgrating_worker.py"):
         if not (HERE / _f).is_file():
             _old.append(f"{_f}: nicht gefunden (muss neben fem_app.py liegen)")
     _wmiss = [k for k in ("absorbed_exact", "triangulation_data", "set_periodic", "symmetrise_periodic", "design_pml", "GratingRun", "adaptive_grating_point",

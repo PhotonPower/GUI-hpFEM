@@ -2,11 +2,24 @@
 
 ## Unveröffentlicht
 
+* Neu (hp-FEM M21 S4, Issue #16): **Kreuzgitter rechnen** mit `hpfem.crossed.solve` (`fem_xgrating_worker.py`, Reiter „2 Rechnung“ und „3 Ergebnisse“ des Modus „Kreuzgitter“).
+  Ein Aufruf je Wellenlänge (s und p aus einer Faktorisierung), Fortschritt und Abbruch über Log und `cancel`-Datei wie bei den anderen Modi. Ergebnisse: R und T je Ordnung (m, n),
+  ΣR, ΣT, Absorption und Energiebilanz ΣR + ΣT + A − 1, Spektrum, **Konvergenzstudie in p** (feste Elemente je Wellenlänge, Tabelle und Bild), **s/p-Gegenüberstellung** (Symmetrieprobe,
+  größte Abweichung) und **Vergleich mit `efficiencies.csv` von FourierGrating** (Ordnungen (n, m) → (m, n) = (n, −m), δ = 0° s und 90° p, ψ = −φ; Abweichung je Ordnung, über p in der
+  Konvergenztabelle). **Import einer FourierGrating-Konfiguration** über `hpfem.fouriergrating` im Python mit hpfem (`fem_xgrating_worker.py --import`): Rahmen, Schichtreihenfolge, p = −p, nur
+  δ = 0° oder 90°. Neu im Modell: Polygon, Drehung von Ellipse und Rechteck, Netz (p, Elemente je Wellenlänge), Konvergenzstudie; Prüfung: verlustfreie Halbräume, keine Kristalle.
+  Neues Merkmal `crossed` in der Bibliotheksprüfung (`fem_run.PROBE`: `hpfem.crossed`, `OrderPlane`, `diffraction_orders`); ohne es ist „Rechnen“ gesperrt und die Seite sagt warum.
+  Tests mit einem Ersatz für hpfem (`tests/test_xgrating.py`: Abbildung des Modells auf `CrossedGrating`, Einheiten, Fehler je Punkt, Abbruch, Tabellen, CSV-Vergleich).
+  **Gerechnet** (hpfem 0.5.1, neu gebautes `_hpfem`, GUI-Worker): Lochgitter r = 125 nm, Periode 500 nm, d = 150 nm, λ = 405 nm, Luft/Glas n = 1,5, p-Polarisation, 2,5 Elemente je Wellenlänge,
+  gegen FourierGrating (RCWA, Nx = Nz = 20, `reference_rcwa_N20.csv`): größte Abweichung über alle Ordnungen und |ΔT₀|: p = 2: 1,6e-2, p = 3: 9,2e-4, p = 4: 2,9e-4 (T₀ = 0,8044 gegen 0,8041; R₀ = 0,02466
+  gegen 0,02468); beugende Ordnungen (±1, 0), (0, ±1), (±1, ±1) bei p = 4 bis 5,2e-5. Energiebilanz ΣR + ΣT − 1: 7,9e-3, −8,6e-4, 7,0e-5 (p = 2, 3, 4). s gegen p bei senkrechtem Einfall: Summen auf 4e-5 (ΣR) und 7e-5 (ΣT) gleich,
+  s bei (m, n) gleicht p bei (n, m) bis 2,9e-4 (p = 3). Schräger Einfall θ = 30°, φ = 20°, s, p = 3: Bilanz +9,3e-4; Ordnungen unsymmetrisch wie erwartet, 4 reflektierte und 11 transmittierte Ordnungen wie
+  in der Vorschau aus der Gittergleichung. Kosten (bei parallel laufendem Benchmark): 19 s (p = 2, 14 052 Unbekannte), 77 s (p = 3, 39 375), 192 s (p = 4, 84 504). Nicht gerechnet: Vergleich bei schrägem Einfall mit FourierGrating
+  (keine Referenzwerte), mehrere Wellenlängen, absorbierende Schichten.
 * Neu (Vorbereitung hp-FEM M21, Issue #16): Modus **„Kreuzgitter (doppelt periodisch, Eingabemaske)“** (`fem_xgrating.py`, `fem_xgrating_app.py`). Perioden p_x, p_y; Einfallsmedium, Substrat;
   Schichten von oben nach unten mit Dicke, Hintergrundmaterial und Formen (Kreis, Ellipse, Rechteck; Loch oder Säule mit Material, Mittelpunkt, Maßen); Einfall (λ oder Durchlauf, θ, φ,
   Polarisation s/p); Aufsicht der Zelle und Seitenansicht des Stapels; Tabelle der ausbreitungsfähigen Ordnungen (m, n) in Reflexion und Transmission aus der Gittergleichung; Modell als JSON
-  speichern und laden; Vorlage „Lochgitter in Glas auf Glas“ (FourierGrating-Beispiel). Konvention wie hpfem: Stapelnormale z, periodisch in x und y. **Noch ohne Rechnung:** R, T und die
-  Energiebilanz bleiben leer, bis die Rechen-Schnittstelle mit hp-FEM M21 S2 feststeht. Tests: `tests/test_xgrating.py`.
+  speichern und laden; Vorlage „Lochgitter in Glas auf Glas“ (FourierGrating-Beispiel). Konvention wie hpfem: Stapelnormale z, periodisch in x und y. Die Rechnung kam danach (nächster Eintrag). Tests: `tests/test_xgrating.py`.
 * Behoben: `load_model()` (periodische Struktur, Rotationskörper) stürzte bei fremden Materialangaben ohne `type` mit `KeyError 'type'` in `fem_materials.describe()` ab. Neu
   `fem_materials.normalize_spec`: `{"n": 1.5}` bzw. `{"n": 1.5, "k": 0.01}` → `{"type": "index", "n": .., "k": ..}` (ebenso eine bloße Zahl, `{"eps": ..}`, `{"name": "Si"}`); nicht Umsetzbares
   (negatives k, kein n, unbekannter Typ) und nicht definierte Materialien in Einfallsmedium, Substrat, Schichten oder Formen werden mit verständlicher Meldung abgelehnt. FourierGrating-Dateien
