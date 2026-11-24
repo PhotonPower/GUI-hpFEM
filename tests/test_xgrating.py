@@ -299,3 +299,17 @@ def test_pol_difference_swaps_orders():
     pt = {"pols": {"s": {"R": 0.1, "T": 0.9, "rows": rows_s}, "p": {"R": 0.1, "T": 0.9, "rows": rows_p}}}
     d = fx.pol_difference(pt)
     assert d["swapped"] == 0.0 and d["plain"] == pytest.approx(0.1) and d["sum_T"] == 0.0
+
+
+def test_field_planes_and_figure(tmp_path):
+    import numpy as np
+
+    m = fx.default_model()
+    assert "field" not in fx.job(m)
+    m["field"]["enabled"] = True
+    pl = fx.job(m)["field"]
+    assert (pl["x_nm"], pl["y_nm"], pl["z_nm"]) == (250.0, 250.0, -75.0)
+    xs, zs = np.linspace(0, 5e-7, 6), np.linspace(-3e-7, 2e-7, 5)
+    npz = dict(xs=xs, ys=xs, zs=zs, xy=np.ones((6, 6)), xz=np.ones((6, 5)), yz=np.ones((6, 5)), z_nm=-75.0)
+    for key in ("xy", "xz", "yz"):
+        assert fx.fig_field(npz, key, m) is not None

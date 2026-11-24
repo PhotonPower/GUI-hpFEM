@@ -67,7 +67,7 @@ def summary(res):
                 rows=[dict(side=r["side"], m=int(r["m"]), n=int(r["n"]), efficiency=float(r["efficiency"])) for r in res.table()])
 
 
-def solve_point(h, cg, job, lam_nm, order, epw):
+def solve_point(h, cg, job, lam_nm, order, epw, field_folder=None, index=0):
     inc = job["incidence"]
     t0 = time.time()
     g = build_grating(h, cg, job, lam_nm)
@@ -75,7 +75,37 @@ def solve_point(h, cg, job, lam_nm, order, epw):
                    elements_per_wavelength=epw or None)
     out = dict(lam_nm=lam_nm, order=int(order), time_s=time.time() - t0, dofs=int(res.num_dofs), cells=int(res.num_cells), **summary(res))
     out["pols"] = {k: summary(res.polarised(k)) for k in ("s", "p")}
+    if field_folder is not None:
+        try:
+            out["field_file"] = sample_planes(res, job, lam_nm, field_folder, f"field_{index}")
+        except Exception as exc:          # the table is still valid without the field
+            say(f"ERROR Nahfeld: {exc}")
+            out["field_error"] = str(exc)
     return out
+
+
+def sample_planes(res, job, lam_nm, folder, name):
+    """|E|²/|E₀|² (total field, the job's polarisation) on the cut planes xy, xz, yz -> <folder>/<name>.npz; NaN outside the mesh."""
+    import numpy as np
+    fl = job["field"]
+    n = max(int(fl.get("resolution", 80)), 8)
+    px, py = job["period_x_nm"] * NM, job["period_y_nm"] * NM
+    depth = sum(la["thickness_nm"] for la in job["layers"]) * NM
+    lam = lam_nm * NM
+    xs, ys = np.linspace(0, px, n), np.linspace(0, py, max(int(round(n * py / px)), 8))
+    zs = np.linspace(-depth - 0.5 * lam, 0.5 * lam, n)
+    x0, y0, z0 = fl["x_nm"] * NM, fl["y_nm"] * NM, fl["z_nm"] * NM
+
+    def e2(a, b, build):
+        A, B = np.meshgrid(a, b, indexing="ij")
+        pts = build(A.ravel(), B.ravel())
+        return (np.abs(res.field(pts)) ** 2).sum(axis=1).reshape(A.shape)
+
+    xy = e2(xs, ys, lambda u, v: np.column_stack([u, v, np.full_like(u, z0)]))
+    xz = e2(xs, zs, lambda u, v: np.column_stack([u, np.full_like(u, y0), v]))
+    yz = e2(ys, zs, lambda u, v: np.column_stack([np.full_like(u, x0), u, v]))
+    np.savez_compressed(folder / f"{name}.npz", xs=xs, ys=ys, zs=zs, xy=xy, xz=xz, yz=yz, x_nm=fl["x_nm"], y_nm=fl["y_nm"], z_nm=fl["z_nm"])
+    return f"{name}.npz"
 
 
 def main_run(folder):
@@ -107,7 +137,7 @@ def main_run(folder):
         lam, order = (lams[0], v) if kind == "conv" else (lams[v], int(me["order"]))
         say(f"PROGRESS {i + 1}/{len(steps)} lambda = {lam:.3f} nm, p = {order}" + (" (Konvergenzstudie)" if kind == "conv" else ""))
         try:
-            res = solve_point(hpfem, cg, job, lam, order, epw)
+            res = solve_point(hpfem, cg, job, lam, order, epw, folder if kind == "main" and job.get("field") else None, v)
             res["index"] = v if kind == "main" else None
             (out["convergence"] if kind == "conv" else out["points"]).append(res)
             if kind == "main" and v == 0 and order in conv_orders:
